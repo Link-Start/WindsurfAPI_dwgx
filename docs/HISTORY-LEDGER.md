@@ -1,7 +1,7 @@
 # 全局历史记账本 / History Ledger
 
 > **不是现状。** 本账在 **2026-08-11 / v3.9.21** 截断（当时 172 份 notes / 183 tag）。
-> 活状态：[`HANDOFF-2026-08-20.md`](HANDOFF-2026-08-20.md)。发版索引：[CHANGELOG.md](../CHANGELOG.md)（v3.9.30 / 181 份）。不要拿下面「版本 → v3.9.21」当当前产品 tag。
+> 活状态：[`HANDOFF-2026-08-20.md`](HANDOFF-2026-08-20.md)。发版索引：[CHANGELOG.md](../CHANGELOG.md)（v3.9.31 / 182 份）。不要拿下面「版本 → v3.9.21」当当前产品 tag。
 > 可视化页 [`HISTORY-LEDGER-VIZ.html`](HISTORY-LEDGER-VIZ.html) 的数字跟到 **v3.9.29 / 2026-08-28**。逐条账仍停在 08-11。
 
 > 把 WindsurfAPI 从创建到 2026-08-11 的**每一件事**记下来：
