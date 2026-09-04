@@ -7,6 +7,7 @@ import { readFileSync, existsSync } from 'fs';
 import { writeJsonAtomic } from '../fs-atomic.js';
 import { join } from 'path';
 import { config, log } from '../config.js';
+import { getBackendSwitch } from '../runtime-config.js';
 
 const ACCESS_FILE = join(config.dataDir, 'model-access.json');
 
@@ -102,6 +103,22 @@ function siblingsForAllowlist(modelId) {
   return sibs;
 }
 
+// v3.9.30 discovery overlay advertises glm-5.2 for selector glm-5-2. Operators
+// whose allow/block list still carries glm-5.1 (the v3.9.29 public id) would
+// miss auto-discovered glm-5.2 requests. Connect folds that pair; Cascade
+// keeps distinct uids (glm-5-1 vs glm-5-2). Exact overlay only — do not route
+// the access list through resolveConnectSelector.
+function connectDiscoverySiblings(modelId) {
+  if (!getBackendSwitch('devinConnect')) return [];
+  if (modelId === 'glm-5.2') return ['glm-5.1'];
+  if (modelId === 'glm-5.1') return ['glm-5.2'];
+  return [];
+}
+
+function accessListSiblings(modelId) {
+  return [...siblingsForAllowlist(modelId), ...connectDiscoverySiblings(modelId)];
+}
+
 /**
  * Check if a model is allowed.
  * @returns {{ allowed: boolean, reason?: string }}
@@ -117,7 +134,7 @@ export function isModelAllowed(modelId) {
     // user typed `claude-opus-4.6` in the dashboard, the request asks
     // for `claude-opus-4.6-thinking`); the symmetric direction is
     // included for completeness.
-    for (const sib of siblingsForAllowlist(modelId)) {
+    for (const sib of accessListSiblings(modelId)) {
       if (_config.list.includes(sib)) return { allowed: true };
     }
     return { allowed: false, reason: `模型 ${modelId} 不在允許清單中`, defaultModel: getDefaultModel() };
@@ -130,7 +147,7 @@ export function isModelAllowed(modelId) {
     // Same inheritance for blocklist: blocking the base also blocks
     // the -thinking variant, so an operator who put `claude-opus-4.6`
     // on the blocklist isn't surprised by `-thinking` slipping past.
-    for (const sib of siblingsForAllowlist(modelId)) {
+    for (const sib of accessListSiblings(modelId)) {
       if (_config.list.includes(sib)) {
         return { allowed: false, reason: `模型 ${modelId} 已被封鎖`, defaultModel: getDefaultModel() };
       }
