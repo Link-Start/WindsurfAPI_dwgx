@@ -21,7 +21,7 @@ flowchart TD
     Q -->|"understand it"| ARCH["review.html<br/>whole-system map"]
     Q -->|"know what was probed"| LED["AUDIT-LEDGER.md<br/>16 rounds, append-only"]
     Q -->|"maintain it"| HO["HANDOFF-*.md<br/>1 live head + 10 archived"]
-    Q -->|"what changed"| REL["releases/<br/>180 notes, v2.0.6 → v3.9.29"]
+    Q -->|"what changed"| REL["releases/<br/>181 notes, v2.0.6 → v3.9.30"]
 
     classDef user fill:#1f6feb22,stroke:#1f6feb
     classDef maint fill:#8957e522,stroke:#8957e5
@@ -62,7 +62,7 @@ flowchart TD
 
 | # | File | Why |
 |---|---|---|
-| 1 | **[HANDOFF-2026-08-20.md](HANDOFF-2026-08-20.md)** | Current state (v3.9.29), what to expose, what is blocked on someone else. Read §1 first (three operational traps), then §2 (public vs never-git). Product tag is v3.9.29; OTA follows the latest annotated tag, not later untagged SHAs. |
+| 1 | **[HANDOFF-2026-08-20.md](HANDOFF-2026-08-20.md)** | Current state (v3.9.30), what to expose, what is blocked on someone else. Read §1 first (three operational traps), then §2 (public vs never-git). Product tag is v3.9.30; OTA follows the latest annotated tag, not later untagged SHAs. |
 | 2 | **[AUDIT-LEDGER.md](AUDIT-LEDGER.md)** | Which subsystems were *actually probed*, the conclusion, and where the guard lives. Start with its "怎么读这份文件" section: the file is appended to per round and is **not** organised by topic, so that section is the only reliable entry point. It states its own round count and line-scale — **this row deliberately states neither**, because both belong to a file that grows every round, and the version of this row that did cite a round count went stale twice. |
 | 3 | **[DEVIN-CONNECT-CUTOVER.md](DEVIN-CONNECT-CUTOVER.md)** | Production cutover runbook. `DEVIN_CONNECT` is what production actually runs (the code default is OFF; the deployment sets it), so this is not optional. Paid wire-calibration procedure in §8. |
 
