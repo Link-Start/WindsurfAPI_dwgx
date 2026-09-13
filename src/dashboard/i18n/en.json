@@ -234,7 +234,7 @@
       },
       "runtimeEnv": {
         "title": "Runtime Backend",
-        "desc": "These switches are set by deploy-time environment variables and need a process restart to change; shown here as read-only status"
+        "desc": "These switches can be flipped on this page; each change is written to runtime-config.json and takes effect immediately, no restart. Anything never flipped here keeps following the deploy-time environment variable"
       },
       "breaker": {
         "title": "Circuit Breaker & Rate Limiting",
@@ -352,9 +352,9 @@
     },
     "nativeToolCall": {
       "title": "Native tool_call",
-      "desc": "When enabled, tool definitions ride the native protobuf wire (calibrated #10 ToolDef + #6 ChatToolCall) instead of prompt emulation (<tool_call> text markup). The native path is more stable for weak models (fable) with many tools and isn't subject to the prompt-emulation empty-reply limit. When off, falls back to prompt emulation (the current stable default).",
+      "desc": "When enabled, tool definitions ride the native protobuf wire (calibrated #10 ToolDef + #6 ChatToolCall) instead of prompt emulation (<tool_call> text markup). The native path is more stable for weak models (fable) with many tools and isn't subject to the prompt-emulation empty-reply limit. This is the default; turning it off falls back to prompt emulation.",
       "enable": "Enable native tool_call",
-      "hint": "Off by default. Before enabling, send a tools-carrying request to a paid account to verify the round-trip."
+      "hint": "On by default (runtime-config.js `experimental.nativeToolCall`). Turning it off falls back to prompt emulation."
     },
     "clineCompat": {
       "title": "Cline compatibility mode",

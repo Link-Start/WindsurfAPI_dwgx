@@ -234,7 +234,7 @@
       },
       "runtimeEnv": {
         "title": "运行时后端",
-        "desc": "这些开关由部署时的环境变量控制，改动需重启进程生效；此处仅显示当前运行状态"
+        "desc": "这些开关可在本页直接切换并写入 runtime-config.json，立即生效、无需重启；未手动切换过的项跟随部署时的环境变量"
       },
       "breaker": {
         "title": "熔断与限流",
@@ -362,7 +362,7 @@
       "title": "原生 tool_call",
       "desc": "开启后工具定义走原生 protobuf 线协议（已标定的 #10 ToolDef + #6 ChatToolCall），而非提示词模拟（<tool_call> 文本标记）。原生路对弱模型（fable）多工具更稳、不受提示词模拟的空回复限制。关闭则回退到提示词模拟（当前默认稳定路径）。",
       "enable": "启用原生 tool_call",
-      "hint": "默认关闭。开启前建议先对付费号发一发带工具的请求验证闭环。"
+      "hint": "默认开启（runtime-config.js 的 experimental.nativeToolCall）。关闭则回退到提示词模拟。"
     },
     "clineCompat": {
       "title": "Cline 兼容模式",
@@ -785,7 +785,7 @@
       "title": "Cascade 对话复用",
       "desc": "多轮对话时复用同一个 cascade_id，只把最新一条 user 消息发给 Windsurf，让服务端维持上下文缓存。命中时可显著降低 TTFB 与上传体积；未命中或账号/LS 变更会自动回退到新会话。需要客户端保留完整历史并按顺序追加（如 new-api、OpenWebUI）。",
       "enable": "启用 Cascade 对话复用",
-      "hint": "默认关闭。开启后对当前对话池立即生效。"
+      "hint": "默认开启。关闭后当前对话池立即停止复用。"
     },
     "identityPrompt": {
       "title": "启用模型身份注入",

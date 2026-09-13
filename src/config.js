@@ -32,9 +32,29 @@ function loadEnv() {
     if ((val.startsWith('"') && val.endsWith('"')) || (val.startsWith("'") && val.endsWith("'"))) {
       val = val.slice(1, -1);
     } else {
-      // Strip inline comments for unquoted values: PORT=3003 # port → 3003
+      // Inline comment: everything from a whitespace-preceded `#` on is dropped
+      // (`PORT=3003 # port` -> `3003`). That is the standard dotenv rule, so it stays.
+      //
+      // What was wrong is that it happened SILENTLY. Measured 2026-09-13: a rotated
+      // secret stored with a trailing note —
+      //   API_KEY=sk-live-abc123 # rotated 2026-09-01
+      // — parses to `sk-live-abc123` under every standard parser, so the dashboard
+      // password still works, the chat API answers 401, and nothing in the logs names
+      // the file the operator just edited. The value is not recoverable here (a bare
+      // value and a commented one are genuinely ambiguous), so the fix is to say so
+      // loudly and to document the quoting rule in .env.example.
       const commentIdx = val.indexOf(' #');
-      if (commentIdx !== -1) val = val.slice(0, commentIdx).trim();
+      if (commentIdx !== -1) {
+        const kept = val.slice(0, commentIdx).trim();
+        const dropped = val.slice(commentIdx).trim();
+        // Only warn when the dropped text is long enough to be a note rather than a
+        // terse label: `PORT=3003 # port` is self-explanatory, a 20-char phrase after
+        // a credential is exactly the shape that gets missed.
+        if (kept && dropped.length > 12) {
+          console.warn(`[config] .env ${key}: inline comment stripped — kept ${JSON.stringify(kept)}, dropped ${JSON.stringify(dropped)}. If the '#' is part of the value, quote it: ${key}="${val}".`);
+        }
+        val = kept;
+      }
     }
     if (!process.env[key]) {
       process.env[key] = val;
