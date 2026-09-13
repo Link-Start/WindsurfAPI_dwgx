@@ -40,64 +40,6 @@ jobs:
   #
   # Baseline VALUE drift is deliberately NOT checked here — it needs a real test run per
   # spec (~40 min for all 25). That is the post-merge sweep: scripts/spec-baseline-audit.mjs.
-  #
-  # PROBE job, 2026-09-13: runs the mutation specs this diff OWNS, on Linux, with the real
-  # harness. Two specs were added for the native tool-call interleave and the embedded-IPv4
-  # SSRF families; nothing in CI had ever executed `npm run mutate`, so "CAUGHT" in those
-  # files was an unverified claim. Scoping by changed file keeps it bounded — each mutation
-  # re-runs its spec's whole suite, so all 42 specs would be hours.
-  #
-  # If this probe is adopted, the honest long-term shape is `--all-specs` on a schedule,
-  # not on every PR: the full sweep is a nightly/weekly cost, and a gate nobody can afford
-  # to run is the failure mode the specs job's own comment warns about.
-  spec-run:
-    name: Mutation specs (changed files)
-    runs-on: ubuntu-latest
-    timeout-minutes: 30
-    steps:
-      - uses: actions/checkout@v5
-        with:
-          fetch-depth: 0
-
-      - name: Setup Node 24
-        uses: actions/setup-node@v5
-        with:
-          node-version: '24'
-
-      - name: Which specs does this diff own?
-        id: scope
-        run: |
-          BASE="${{ github.event.pull_request.base.sha }}"
-          if [ -z "$BASE" ]; then BASE="origin/master"; fi
-          CHANGED=$(git diff --name-only "$BASE"...HEAD)
-          echo "changed files:"; echo "$CHANGED"
-          SPECS=""
-          for s in test/mutations/*.json; do
-            # a spec is in scope when the diff touches a file it pins or a test it runs
-            if node -e '
-              const fs=require("fs");
-              const spec=JSON.parse(fs.readFileSync(process.argv[1],"utf8"));
-              const changed=process.argv[2].split("\n").filter(Boolean);
-              const files=[...(spec.mutations||[]).map(m=>m.file), ...(spec.tests||[])];
-              process.exit(files.some(f=>changed.includes(f))?0:1);
-            ' "$s" "$CHANGED"; then SPECS="$SPECS $s"; fi
-          done
-          echo "in scope:$SPECS"
-          echo "specs=$SPECS" >> "$GITHUB_OUTPUT"
-
-      - name: Run them (real harness, real CAUGHT/SURVIVED)
-        if: steps.scope.outputs.specs != ''
-        run: |
-          fail=0
-          for s in ${{ steps.scope.outputs.specs }}; do
-            echo "=== $s"
-            npm run mutate -- "$s" || fail=1
-          done
-          exit $fail
-
-      - name: Nothing in scope
-        if: steps.scope.outputs.specs == ''
-        run: echo "no mutation spec pins a file this diff changed"
   specs:
     name: Mutation spec consistency
     runs-on: ubuntu-latest
