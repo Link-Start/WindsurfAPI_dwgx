@@ -1,4 +1,6 @@
 {
+  "_guarded_by": "test/tool-emulation.test.js — 'normalizeMessagesForCascade — native structured path interleaves parallel tool history' (call-site shape + the emulation-path control) and 'native history assembles to an interleaved role sequence on the wire' (the encoded #2 role bytes).",
+  "_ci_observation_2026_09_13": "First real CI run (PR #269, Linux, Node 24) reported for mutation 2: 'baseline 72, mutated 70 — a failure from a truncated or load-broken suite is not mutation evidence'. Reproduced locally on Windows: the SAME mutation keeps all 72 assertions running (pass=66 fail=6) and reddens the emulation control. So the truncation is harness-side, not a property of the mutation — but mutate-verify's refusal to score it is right, and it is recorded here rather than argued away. If CI keeps reporting a shrunken run for that mutation, treat it as NOT VERIFIED there and rely on mutation 1, which is narrower.",
   "tests": [
     "test/tool-emulation.test.js"
   ],
