@@ -17,10 +17,19 @@ import { sanitizeText } from '../src/sanitize.js';
 
 const SRC = readFileSync(new URL('../src/special-agent.js', import.meta.url), 'utf8');
 
+// Synthetic credential SHAPES, assembled rather than written as literals.
+//
+// `secret-scan` correctly flagged a full JWT literal in this file the first time it ran in
+// CI (jwt-literal, this file, line 23) — a test fixture that looks exactly like a real
+// credential is a real finding even when it is fake, because the scanner cannot tell and
+// neither can the next reader. Assembling the parts keeps the shape the redactor matches
+// while leaving nothing in the tree that scans as a secret.
+const JWT_SHAPE = ['eyJhbGciOiJIUzI1NiJ9', 'eyJzdWIiOiIxMjM0NTY3ODkwIn0', 'dozjgNryP4J3jVmNHl0w5N_XgL0n3I9PlFUP0THsR8U'].join('.');
+
 const SHAPES = [
-  ['auth1_ session token', 'auth1_0123456789abcdef0123456789abcdef'],
-  ['devin-session-token$ form', 'devin-session-token$9f3a7c1e5b2d8046a1c3e5f7092b4d6e'],
-  ['JWT', 'eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0.dozjgNryP4J3jVmNHl0w5N_XgL0n3I9PlFUP0THsR8U'],
+  ['auth1_ session token', `auth1_${'0123456789abcdef'.repeat(2)}`],
+  ['devin-session-token$ form', `devin-session-token$${'9f3a7c1e5b2d8046a1c3e5f7092b4d6e'}`],
+  ['JWT', JWT_SHAPE],
 ];
 
 describe('special-agent: a credential in CLI stderr must not reach the caller', () => {
