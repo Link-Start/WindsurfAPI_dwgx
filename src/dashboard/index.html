@@ -2725,7 +2725,7 @@ tbody tr:hover td { background: var(--surface-2); }
       <div class="section-header">
         <div>
           <div class="section-title" data-i18n="section.settings.runtimeEnv.title">运行时后端</div>
-          <div class="section-desc" data-i18n="section.settings.runtimeEnv.desc">这些开关由部署时的环境变量控制，改动需重启进程生效；此处仅显示当前运行状态</div>
+          <div class="section-desc" data-i18n="section.settings.runtimeEnv.desc">这些开关可在本页直接切换并写入 runtime-config.json，立即生效、无需重启；未手动切换过的项跟随部署时的环境变量</div>
         </div>
       </div>
       <div class="section-body" id="set-runtime-env-body">
@@ -3187,7 +3187,7 @@ tbody tr:hover td { background: var(--surface-2); }
           </label>
           <div>
             <div style="font-weight:500" data-i18n="section.cascadeReuse.enable">启用 Cascade 对话复用</div>
-            <div class="text-sm text-muted" data-i18n="section.cascadeReuse.hint">默认关闭。开启后对当前对话池立即生效。</div>
+            <div class="text-sm text-muted" data-i18n="section.cascadeReuse.hint">默认开启。关闭后当前对话池立即停止复用。</div>
           </div>
         </div>
         <div class="metrics-grid" id="exp-pool-cards"></div>
@@ -3269,7 +3269,7 @@ tbody tr:hover td { background: var(--surface-2); }
           </label>
           <div>
             <div style="font-weight:500" data-i18n="section.nativeToolCall.enable">启用原生 tool_call</div>
-            <div class="text-sm text-muted" data-i18n="section.nativeToolCall.hint">默认关闭。开启前建议先对付费号发一发带工具的请求验证闭环。</div>
+            <div class="text-sm text-muted" data-i18n="section.nativeToolCall.hint">默认开启（runtime-config.js 的 experimental.nativeToolCall）。关闭则回退到提示词模拟。</div>
           </div>
         </div>
       </div>

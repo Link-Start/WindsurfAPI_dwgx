@@ -25,6 +25,12 @@ import {
 import { config, log } from './config.js';
 import { recordRequest } from './dashboard/stats.js';
 import { sanitizeText, PathSanitizeStream } from './sanitize.js';
+// The CLI child receives the pool credential in its env (:428-431) and its stderr
+// is folded into the message the CALLER sees (:504, and :692/:925 hand that message
+// to the client), so a CLI that prints its own token on an auth failure would leak
+// it. sanitizeText is a path/XML redactor and does not know any credential shape —
+// measured 2026-09-13: auth1_/devin-session-token$/JWT all passed through it.
+import { redactCredentialFragments } from './log-safety.js';
 import { runDevinAcpProcess, probeDevinCliAvailable, acpVisionEnabled } from './devin-acp.js';
 import { extractInlineImages as extractImagesFromContent } from './devin-connect.js';
 import { systemFingerprint } from './system-fingerprint.js';
@@ -501,7 +507,10 @@ export async function runDevinPrint(prompt, { modelKey = '', apiKey = '', signal
         }
         if (code !== 0) {
           const detail = (stderr || stdout || `exit code ${code}`).trim();
-          reject(Object.assign(new Error(`Devin CLI failed: ${detail.slice(0, 1000)}`), {
+          // REDACT FIRST, THEN TRUNCATE. Slicing first splits a JWT at its first
+          // dot and the credential regex no longer matches — the exact trap
+          // documented in log-safety.js next to sliceRedactedJson.
+          reject(Object.assign(new Error(`Devin CLI failed: ${redactCredentialFragments(detail).slice(0, 1000)}`), {
             status: 502,
             type: 'backend_error',
             exitCode: code,
@@ -689,7 +698,7 @@ function streamLiveAcp({ id, created, model, messages, prompt, modelKey, acct, r
         // SSE error event rather than an HTTP status the client can no longer
         // see. Use a non-stop finish_reason so clients that ignore the bare
         // error frame don't mistake a failed run for a clean completion (H2).
-        send({ error: { type: err?.type || 'backend_error', message: sanitizeText(err?.message || 'Special-agent stream failed') } });
+        send({ error: { type: err?.type || 'backend_error', message: redactCredentialFragments(sanitizeText(err?.message || 'Special-agent stream failed')) } });
         send({ id, object: 'chat.completion.chunk', created, model,
           choices: [{ index: 0, delta: {}, finish_reason: 'error' }] });
       } finally {
@@ -922,7 +931,9 @@ export async function handleSpecialAgentChatCompletion(body, route, deps = {}) {
       // a free-tier slot (RPM=10) occupied and fake-saturate the account.
       (deps.refundReservation || refundReservation)(acct.apiKey, acct.reservationTimestamp);
     }
-    return errorResponse(status, type, sanitizeText(err.message || 'Special-agent backend failed'), {
+    // sanitizeText handles paths; redactCredentialFragments handles credentials.
+    // Both are needed: err.message can carry CLI stderr, which can carry a token.
+    return errorResponse(status, type, redactCredentialFragments(sanitizeText(err.message || 'Special-agent backend failed')), {
       backend: 'devin-cli',
     });
   } finally {
