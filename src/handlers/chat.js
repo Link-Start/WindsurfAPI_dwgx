@@ -41,7 +41,7 @@ import {
   normalizeMessagesForCascade, ToolCallStreamParser, parseToolCallsFromText, stripToolMarkupFromText,
   buildToolPreambleForProto, buildCompactToolPreambleForProto,
   buildSchemaCompactToolPreambleForProto, buildSkinnyToolPreambleForProto,
-  trimToolsForWeakModel, isWeakEmulationModel,
+  trimToolsForWeakModel, isWeakEmulationModel, interleaveParallelToolMessages,
 } from './tool-emulation.js';
 import {
   getNativeBridgeDecision, buildReverseLookup,
@@ -3310,7 +3310,7 @@ async function _handleChatCompletionsInner(body, context = {}) {
     const nativeStructured = nativeDefsOn && nativeCallsOn;
     let connectMessages = emulateTools
       ? normalizeMessagesForCascade(messages, connectTools, { modelKey: reqModelName, provider: null, route: 'devin_connect', toolChoice: tool_choice, injectUserPreamble: !suppressPreamble, stripOrphans: nativeDefsOn, nativeStructured })
-      : messages;
+      : interleaveParallelToolMessages(messages);
     // HYBRID native path: DEVIN_CONNECT has no proto tool_calling_section
     // slot, so the description-only preamble (buildToolPreambleForProto with
     // nativeStructured:true) is never built by normalizeMessagesForCascade —

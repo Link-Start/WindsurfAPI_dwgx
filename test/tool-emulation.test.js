@@ -1,6 +1,7 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
 import { repairToolCallArguments } from '../src/handlers/chat.js';
+import { buildGetChatMessageRequest } from '../src/devin-connect.js';
 import {
   ToolCallStreamParser,
   parseToolCallsFromText,
@@ -12,6 +13,7 @@ import {
   buildSkinnyToolPreambleForProto,
   normalizeMessagesForCascade,
   pickToolDialect,
+  interleaveParallelToolMessages,
 } from '../src/handlers/tool-emulation.js';
 
 describe('ToolCallStreamParser', () => {
@@ -943,5 +945,226 @@ describe('repairToolCallArguments', () => {
       },
     ]);
     assert.equal(JSON.parse(repaired.argumentsJson).command, 'npm test');
+  });
+});
+
+describe('interleaveParallelToolMessages', () => {
+  it('splits batch tool_calls with matching results into alternating pairs', () => {
+    const messages = [
+      { role: 'user', content: 'run two commands' },
+      {
+        role: 'assistant',
+        content: 'Executing both tools',
+        reasoning_content: 'Need to run tool 1 then tool 2',
+        tool_calls: [
+          { id: 'call_1', type: 'function', function: { name: 'bash', arguments: '{"command":"pwd"}' } },
+          { id: 'call_2', type: 'function', function: { name: 'bash', arguments: '{"command":"ls"}' } },
+        ],
+      },
+      { role: 'tool', tool_call_id: 'call_1', content: '/workspace' },
+      { role: 'tool', tool_call_id: 'call_2', content: 'file.txt' },
+      { role: 'user', content: 'next' },
+    ];
+
+    const out = interleaveParallelToolMessages(messages);
+    assert.equal(out.length, 6, '1 user + 2 pairs (4 msgs) + 1 user = 6 messages');
+
+    // Turn 1
+    assert.equal(out[1].role, 'assistant');
+    assert.equal(out[1].content, 'Executing both tools');
+    assert.equal(out[1].reasoning_content, 'Need to run tool 1 then tool 2');
+    assert.deepEqual(out[1].tool_calls.map((t) => t.id), ['call_1']);
+    assert.equal(out[2].role, 'tool');
+    assert.equal(out[2].tool_call_id, 'call_1');
+
+    // Turn 2
+    assert.equal(out[3].role, 'assistant');
+    assert.equal(out[3].content, null, 'subsequent turns should have null content');
+    assert.equal(out[3].reasoning_content, undefined, 'reasoning stripped on subsequent turns');
+    assert.deepEqual(out[3].tool_calls.map((t) => t.id), ['call_2']);
+    assert.equal(out[4].role, 'tool');
+    assert.equal(out[4].tool_call_id, 'call_2');
+
+    // Subsequent user message
+    assert.equal(out[5].content, 'next');
+  });
+
+  it('preserves unmatched tool results and non-parallel messages intact', () => {
+    const messages = [
+      {
+        role: 'assistant',
+        tool_calls: [
+          { id: 'c1', type: 'function', function: { name: 'f1', arguments: '{}' } },
+          { id: 'c2', type: 'function', function: { name: 'f2', arguments: '{}' } },
+        ],
+      },
+      { role: 'tool', tool_call_id: 'c1', content: 'r1' },
+      { role: 'tool', tool_call_id: 'c_extra', content: 'r_extra' },
+    ];
+
+    const out = interleaveParallelToolMessages(messages);
+    assert.equal(out.length, 4);
+    assert.equal(out[0].tool_calls[0].id, 'c1');
+    assert.equal(out[1].tool_call_id, 'c1');
+    assert.equal(out[2].tool_calls[0].id, 'c2');
+    assert.equal(out[3].tool_call_id, 'c_extra', 'unmatched tool result appended without drop');
+  });
+
+  it('leaves single-tool calls or unresponded calls untouched', () => {
+    const single = [
+      { role: 'assistant', tool_calls: [{ id: 'c1' }] },
+      { role: 'tool', tool_call_id: 'c1', content: 'ok' },
+    ];
+    assert.deepEqual(interleaveParallelToolMessages(single), single);
+
+    const pending = [
+      { role: 'assistant', tool_calls: [{ id: 'c1' }, { id: 'c2' }] },
+    ];
+    assert.deepEqual(interleaveParallelToolMessages(pending), pending);
+  });
+});
+
+// ─── The call site: normalizeMessagesForCascade must interleave on the native
+// structured path ────────────────────────────────────────────────────────────
+//
+// WHY THIS BLOCK EXISTS (separate from the helper's own tests above).
+//
+// The helper being correct says nothing about whether the normalizer CALLS it.
+// Measured 2026-09-13: commenting out `messages = interleaveParallelToolMessages(
+// messages)` in tool-emulation.js left the entire suite green (4172 tests) — the
+// helper's three unit tests never touch the call site. These assertions pin the
+// call site itself, so deleting or re-gating that line fails here.
+//
+// Root cause this guards: devin-connect.js encodes one assistant turn carrying N
+// tool_calls as N CONSECUTIVE role=2 frames and only then emits the role=4
+// tool_results. Upstream's state machine answers that shape with an internal
+// error (reproduced live: 529, or UPSTREAM_INTERNAL) and the session stays
+// poisoned for every later turn. Alternating 2/4/2/4 clears it.
+describe('normalizeMessagesForCascade — native structured path interleaves parallel tool history', () => {
+  const history = () => [
+    { role: 'user', content: 'run two commands' },
+    {
+      role: 'assistant',
+      content: 'Executing both tools',
+      reasoning_content: 'need both',
+      tool_calls: [
+        { id: 'call_1', type: 'function', function: { name: 'bash', arguments: '{"command":"pwd"}' } },
+        { id: 'call_2', type: 'function', function: { name: 'bash', arguments: '{"command":"ls"}' } },
+      ],
+    },
+    { role: 'tool', tool_call_id: 'call_1', content: '/workspace' },
+    { role: 'tool', tool_call_id: 'call_2', content: 'file.txt' },
+  ];
+  const opts = (nativeStructured) => ({
+    modelKey: 'swe-1-7', provider: null, route: 'devin_connect',
+    injectUserPreamble: false, nativeStructured,
+  });
+
+  it('nativeStructured:true keeps structural turns and pairs each call with its own result', () => {
+    const out = normalizeMessagesForCascade(history(), [], opts(true));
+
+    // The interleave is the whole point: roles alternate assistant/tool.
+    assert.deepEqual(
+      out.map((m) => m.role),
+      ['user', 'assistant', 'tool', 'assistant', 'tool'],
+      'parallel batch must be split into alternating call/result pairs',
+    );
+    assert.deepEqual(out[1].tool_calls.map((t) => t.id), ['call_1']);
+    assert.equal(out[2].tool_call_id, 'call_1');
+    assert.deepEqual(out[3].tool_calls.map((t) => t.id), ['call_2']);
+    assert.equal(out[4].tool_call_id, 'call_2');
+
+    // Structural fidelity: no folding to text, no synthesized user turns, and
+    // the duplicate first call id that the un-interleaved shape produced is gone.
+    assert.equal(out.filter((m) => m.role === 'user').length, 1);
+    assert.equal(out.filter((m) => m.role === 'tool').length, 2);
+    assert.ok(!/<tool_result/.test(JSON.stringify(out)), 'no text markup on the native path');
+  });
+
+  // Control: the same input on the emulation path must still FOLD (2 calls stay
+  // one assistant, results become user turns). If a future change makes the
+  // interleave unconditional, this control is what fails.
+  it('emulation path still folds the same history (control)', () => {
+    const out = normalizeMessagesForCascade(history(), [], opts(false));
+    assert.equal(out.filter((m) => m.role === 'assistant').length, 1);
+    assert.equal(out.filter((m) => m.role === 'tool').length, 0, 'role:tool is folded away');
+    assert.ok(out.length >= 3);
+  });
+});
+
+// ─── The wire the upstream actually receives ─────────────────────────────────
+//
+// This is the assertion that cannot be fooled by shape-level reasoning: it reads
+// the #2 role field out of the encoded protobuf frames. Before the fix the
+// sequence is [2,2,4,4] (two consecutive assistant frames, then both results);
+// after it is [2,4,2,4]. The bug report is about exactly this byte-level shape.
+describe('native history assembles to an interleaved role sequence on the wire', () => {
+  // Minimal top-level protobuf walker: returns [{field, wireType, value}] in order.
+  function walk(buf) {
+    const out = [];
+    let i = 0;
+    while (i < buf.length) {
+      let shift = 0; let key = 0; let b;
+      do { b = buf[i++]; key |= (b & 0x7f) << shift; shift += 7; } while (b & 0x80);
+      const field = key >>> 3; const wireType = key & 7;
+      if (wireType === 0) {
+        let v = 0; shift = 0;
+        do { b = buf[i++]; v |= (b & 0x7f) << shift; shift += 7; } while (b & 0x80);
+        out.push({ field, wireType, value: v });
+      } else if (wireType === 2) {
+        let len = 0; shift = 0;
+        do { b = buf[i++]; len |= (b & 0x7f) << shift; shift += 7; } while (b & 0x80);
+        out.push({ field, wireType, value: buf.subarray(i, i + len) });
+        i += len;
+      } else if (wireType === 1) { out.push({ field, wireType, value: buf.subarray(i, i + 8) }); i += 8; }
+      else if (wireType === 5) { out.push({ field, wireType, value: buf.subarray(i, i + 4) }); i += 4; }
+      else throw new Error(`unsupported wire type ${wireType} for field ${field} at ${i}`);
+    }
+    return out;
+  }
+  // ChatMessage is the repeated #3 field (see buildGetChatMessageRequest: `for (const cm
+  // of chatMessages) parts.push(writeMessageField(3, cm))`). Roles come from each
+  // frame's #2 varint, in frame order — i.e. exactly what upstream's state machine sees.
+  const roles = (buf) => walk(buf)
+    .filter((f) => f.field === 3 && f.wireType === 2)
+    .flatMap((f) => walk(f.value))
+    .filter((f) => f.field === 2 && f.wireType === 0)
+    .map((f) => f.value);
+
+  const request = (messages, nativeToolCall) => buildGetChatMessageRequest({
+    token: 'x', model: 'swe-1-7', messages, nativeToolCall, env: {},
+  });
+
+  const parallelHistory = [
+    { role: 'user', content: 'run two commands' },
+    {
+      role: 'assistant',
+      content: 'Executing both tools',
+      tool_calls: [
+        { id: 'call_1', type: 'function', function: { name: 'bash', arguments: '{"command":"pwd"}' } },
+        { id: 'call_2', type: 'function', function: { name: 'bash', arguments: '{"command":"ls"}' } },
+      ],
+    },
+    { role: 'tool', tool_call_id: 'call_1', content: '/workspace' },
+    { role: 'tool', tool_call_id: 'call_2', content: 'file.txt' },
+  ];
+
+  it('normalized native history encodes as text + 2/4/2/4 rather than text + 2/2/4/4', () => {
+    const normalized = normalizeMessagesForCascade(parallelHistory, [], {
+      modelKey: 'swe-1-7', provider: null, route: 'devin_connect',
+      injectUserPreamble: false, nativeStructured: true,
+    });
+    const seq = roles(request(normalized, true));
+    // Leading 1 = the user turn; leading 2 = the assistant's own text, which the
+    // encoder emits as its own role=2 frame (devin-connect.js:1065-1073) BEFORE the
+    // per-call frames. The interleave changes what follows: 2/4 pairs, not 2/2/4/4.
+    assert.deepEqual(seq, [1, 2, 2, 4, 2, 4], `expected interleaved roles, got ${JSON.stringify(seq)}`);
+  });
+
+  // Premise pin: if the encoder ever stops emitting one role=2 frame per call,
+  // the assertion above would stop measuring what it claims to measure.
+  it('premise: the encoder emits one role=2 frame PER tool_call (the shape the fix answers)', () => {
+    const seq = roles(request(parallelHistory, true));
+    assert.deepEqual(seq, [1, 2, 2, 2, 4, 4], `expected batched roles, got ${JSON.stringify(seq)}`);
   });
 });

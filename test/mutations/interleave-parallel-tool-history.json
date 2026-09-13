@@ -1,0 +1,27 @@
+{
+  "tests": [
+    "test/tool-emulation.test.js"
+  ],
+  "expectBaselinePass": 72,
+  "mutations": [
+    {
+      "name": "call site removed — the normalizer stops interleaving parallel tool history, so a batched assistant turn encodes as consecutive role=2 frames and upstream 500/529s the whole session (the defect PR #261 fixes)",
+      "file": "src/handlers/tool-emulation.js",
+      "anchor": "  if (options.nativeStructured === true) {\n    messages = interleaveParallelToolMessages(messages);\n  }",
+      "replacement": "  if (false) {\n    messages = interleaveParallelToolMessages(messages);\n  }"
+    },
+    {
+      "name": "interleave runs unconditionally — the native-only gate is dropped, so prompt-emulation history gets restructured too and the emulation control shape changes under every non-native dialect",
+      "file": "src/handlers/tool-emulation.js",
+      "anchor": "  const nativeStructured = options.nativeStructured === true;",
+      "replacement": "  const nativeStructured = true;"
+    },
+    {
+      "name": "KNOWN SURVIVOR — a repeated tool_call_id is still split into two assistant frames with the same id (probe 2026-09-13: assistant[c1] / tool(c1) / assistant[c1]). Not covered by design: these tests pin the shape the upstream state machine needs, not OpenAI's uniqueness rule. Deduping would change behaviour for a malformed-history case with no capture behind it.",
+      "file": "src/handlers/tool-emulation.js",
+      "anchor": "          const matchIdx = toolMsgs.findIndex(\n            (tm, idx) => !usedIndices.has(idx) && String(tm?.tool_call_id ?? '') === tcid,\n          );",
+      "replacement": "          const matchIdx = toolMsgs.findIndex(\n            (tm, idx) => String(tm?.tool_call_id ?? '') === tcid,\n          );",
+      "expectCaught": false
+    }
+  ]
+}

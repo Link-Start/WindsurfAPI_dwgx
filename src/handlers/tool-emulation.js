@@ -1034,8 +1034,79 @@ export function stripOrphanedToolResults(messages) {
   return dropped ? out : messages;
 }
 
+export function interleaveParallelToolMessages(messages) {
+  if (!Array.isArray(messages)) return messages;
+  const out = [];
+  let i = 0;
+  while (i < messages.length) {
+    const m = messages[i];
+    if (m?.role === 'assistant' && Array.isArray(m.tool_calls) && m.tool_calls.length > 1) {
+      let j = i + 1;
+      const toolMsgs = [];
+      while (j < messages.length && messages[j]?.role === 'tool') {
+        toolMsgs.push(messages[j]);
+        j++;
+      }
+
+      let hasMatches = false;
+      const usedIndices = new Set();
+      for (const tc of m.tool_calls) {
+        const tcid = String(tc?.id ?? '');
+        if (tcid && toolMsgs.some((tm) => String(tm?.tool_call_id ?? '') === tcid)) {
+          hasMatches = true;
+          break;
+        }
+      }
+
+      if (hasMatches) {
+        let first = true;
+        for (const tc of m.tool_calls) {
+          const singleAssistant = {
+            ...m,
+            content: first ? (m.content || null) : null,
+            tool_calls: [tc],
+          };
+          if (!first) {
+            delete singleAssistant.reasoning_content;
+            delete singleAssistant.reasoning;
+          }
+          out.push(singleAssistant);
+
+          const tcid = String(tc?.id ?? '');
+          const matchIdx = toolMsgs.findIndex(
+            (tm, idx) => !usedIndices.has(idx) && String(tm?.tool_call_id ?? '') === tcid,
+          );
+          if (matchIdx !== -1) {
+            usedIndices.add(matchIdx);
+            out.push(toolMsgs[matchIdx]);
+          }
+          first = false;
+        }
+        for (let idx = 0; idx < toolMsgs.length; idx++) {
+          if (!usedIndices.has(idx)) {
+            out.push(toolMsgs[idx]);
+          }
+        }
+        i = j;
+        continue;
+      }
+    }
+    out.push(m);
+    i++;
+  }
+  return out;
+}
+
 export function normalizeMessagesForCascade(messages, tools, options = {}) {
   if (!Array.isArray(messages)) return messages;
+  // Devin Connect & Cascade multi-turn: when nativeStructured mode is engaged
+  // (native #10 ToolDef + #6 ChatToolCall on DEVIN_CONNECT), the upstream gRPC
+  // state machine requires tool_calls and results to be interleaved per turn.
+  // In text-emulation mode (nativeStructured: false, e.g. Kimi dialect),
+  // dialect-specific batch formatters handle batch history.
+  if (options.nativeStructured === true) {
+    messages = interleaveParallelToolMessages(messages);
+  }
   // Orphan-stripping is OPT-IN (options.stripOrphans) — NOT the default. Doing it
   // unconditionally would gut a legitimate continuation that carries a
   // tool_result whose parent tool_call lived in an earlier, client-truncated
