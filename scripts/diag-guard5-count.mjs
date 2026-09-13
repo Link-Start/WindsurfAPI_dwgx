@@ -283,6 +283,41 @@ async function driftMode() {
     && idx.every((v, k) => k === 0 || v === idx[k - 1] + 1);
   console.log(`\nare they a contiguous TAIL of the run? ${contiguousTail ? 'YES -> the run is CUT SHORT' : 'NO -> scattered, not a simple truncation'}`);
   console.log(`first missing index ${idx[0] ?? '-'}, last ${idx[idx.length - 1] ?? '-'}, count ${idx.length}`);
+
+  // Per-top-level-suite child counts, leanest vs richest. A suite that reports ZERO children in
+  // the leanest round means its tests were never REGISTERED there -- which distinguishes "the
+  // runner lost results" from "the file never declared them". node's own summary arithmetic
+  // (tests === pass+fail+skipped+cancelled+todo) already holds in truncated runs, so the
+  // aggregate agrees with whatever it was told; this shows what it was told.
+  const suites = (round) => {
+    const out = [];
+    let cur = null;
+    for (const line of round.tap.clean.split('\n')) {
+      const m = line.match(/^(\s*)(not ok|ok) \d+ - (.*)$/);
+      if (!m) continue;
+      const depth = m[1].length / 4;
+      if (depth === 0) { cur = { name: m[3], kids: 0 }; out.push(cur); }
+      else if (cur && depth === 1) cur.kids++;
+    }
+    return out;
+  };
+  const ls = suites(leanest);
+  const rs = suites(richest);
+  console.log(`\ntop-level suites: leanest round ${leanest.r} = ${ls.length}, richest round ${richest.r} = ${rs.length}`);
+  console.log('  (# = children reported in that round)');
+  const maxLen = Math.max(ls.length, rs.length);
+  for (let i = 0; i < maxLen; i++) {
+    const a = ls[i], b = rs[i];
+    const flag = (!a || !b || a.kids !== b.kids) ? '  <-- differs' : '';
+    console.log(`  [${String(i).padStart(2)}] leanest=${a ? String(a.kids).padStart(3) : ' --'}`
+      + `  richest=${b ? String(b.kids).padStart(3) : ' --'}`
+      + `  ${(b || a).name.slice(0, 62)}${flag}`);
+  }
+
+  if (leanest.tap.tests < richest.tap.tests) {
+    banner(`FULL TAP OF THE LEANEST ROUND (${leanest.r}, ${leanest.tap.tests} tests) — where does it stop?`);
+    console.log(leanest.tap.clean);
+  }
 }
 
 if (rounds > 1) {
