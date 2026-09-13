@@ -102,8 +102,9 @@ function missingFrom(a, b) {
   return out;
 }
 
-const [specPath, idxRaw] = process.argv.slice(2);
-if (!specPath) { console.error('usage: node scripts/diag-guard5-count.mjs <spec.json> [index]'); process.exit(1); }
+const [specPath, idxRaw, roundsRaw] = process.argv.slice(2);
+if (!specPath) { console.error('usage: node scripts/diag-guard5-count.mjs <spec.json> [index] [rounds]'); process.exit(1); }
+const rounds = Number(roundsRaw || '1');
 const idx = Number(idxRaw || '1') - 1;
 const spec = JSON.parse(readFileSync(specPath, 'utf8'));
 const mut = spec.mutations[idx];
@@ -216,13 +217,61 @@ function conclude(name, r) {
   console.log(`\nharness failedNames (mutated): ${r.mut.h.failedNames.join(' | ') || '(none)'}`);
 }
 
-const checkout = await armCheckout();
-conclude('checkout', checkout);
-const disposable = await armDisposable();
-conclude('disposable clone', disposable);
+/**
+ * DRIFT MODE (rounds > 1): run the SAME unmutated baseline N times and report whether the
+ * number of tests the harness counts is stable. This is the judgement the 2026-09-13 sweeps
+ * could not make: mutate-verify printed "baseline pass=60 but spec expects 72" in one sweep
+ * and "baseline pass=72 but spec expects 60" in the next, for a spec whose `tests` array is a
+ * SINGLE unchanged file. If N identical runs disagree, no declared baseline can be correct.
+ */
+async function driftMode() {
+  banner(`DRIFT MODE — ${rounds} identical baseline runs of ${spec.tests.join(' ')}`);
+  console.log('No mutation is applied here. Same bytes, same argv, same env, every round.');
+  console.log('Counting both ways: TAP (# tests) and the harness parser (counts.tests).\n');
+  const seen = new Map();
+  const seenTap = new Map();
+  const seenNames = new Map();
+  for (let r = 1; r <= rounds; r++) {
+    const h = harnessInventory(execSuite(HARNESS_ARGS, ROOT));
+    const tap = tapInventory(execSuite(TAP_ARGS, ROOT).out);
+    const key = `${h.tests}/${h.pass}/${h.fail}`;
+    seen.set(key, (seen.get(key) || 0) + 1);
+    seenTap.set(String(tap.tests), (seenTap.get(String(tap.tests)) || 0) + 1);
+    const nk = [...tap.names].sort().join('\u0000');
+    seenNames.set(nk, (seenNames.get(nk) || 0) + 1);
+    console.log(`round ${String(r).padStart(3)}  HARNESS tests=${h.tests} pass=${h.pass} fail=${h.fail}`
+      + ` skipped=${h.skipped} cancelled=${h.cancelled} infra=${h.infrastructureFailure}`
+      + `   | TAP tests=${tap.tests} pass=${tap.pass} fail=${tap.fail}  names=${tap.names.length}`);
+  }
+  banner('DRIFT RESULT');
+  console.log(`rollout ${spec.tests.join(' ')}`);
+  console.log(`declared expectBaselinePass = ${spec.expectBaselinePass ?? '(none)'}\n`);
+  console.log('harness (tests/pass/fail) -> how many rounds:');
+  for (const [k, n] of [...seen.entries()].sort((a, b) => b[1] - a[1])) console.log(`  ${k}   x${n}`);
+  console.log('\nTAP (# tests) -> how many rounds:');
+  for (const [k, n] of [...seenTap.entries()].sort((a, b) => b[1] - a[1])) console.log(`  ${k}   x${n}`);
+  console.log(`\ndistinct TAP name-sets: ${seenNames.size}`);
+  const totals = [...seen.keys()].map((k) => Number(k.split('/')[0]));
+  const lo = Math.min(...totals);
+  const hi = Math.max(...totals);
+  console.log(`\n${seen.size === 1 ? '>>> STABLE' : '>>> UNSTABLE (DRIFT CONFIRMED)'}: harness counted ${lo}..${hi} across ${rounds} identical runs.`);
+  if (seen.size > 1) {
+    console.log('    A baseline that varies run-to-run makes expectBaselinePass unsatisfiable and');
+    console.log('    makes guard 5 trip at random. Fix the DIGIT STABILITY, not the declared value.');
+  }
+}
 
-banner('BOTTOM LINE');
-for (const [name, r] of [['checkout', checkout], ['disposable', disposable]]) {
-  if (!r) { console.log(`${name.padEnd(11)} not measured`); continue; }
-  console.log(`${name.padEnd(11)} TAP ${r.base.tap.tests}->${r.mut.tap.tests}   HARNESS ${r.base.h.tests}->${r.mut.h.tests}`);
+if (rounds > 1) {
+  await driftMode();
+} else {
+  const checkout = await armCheckout();
+  conclude('checkout', checkout);
+  const disposable = await armDisposable();
+  conclude('disposable clone', disposable);
+
+  banner('BOTTOM LINE');
+  for (const [name, r] of [['checkout', checkout], ['disposable', disposable]]) {
+    if (!r) { console.log(`${name.padEnd(11)} not measured`); continue; }
+    console.log(`${name.padEnd(11)} TAP ${r.base.tap.tests}->${r.mut.tap.tests}   HARNESS ${r.base.h.tests}->${r.mut.h.tests}`);
+  }
 }

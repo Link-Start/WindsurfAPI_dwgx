@@ -23,6 +23,10 @@ on:
         description: 'Diagnostic only: 1-based mutation index whose count diverges.'
         required: false
         default: '1'
+      diag_rounds:
+        description: 'Diagnostic only: >1 runs the baseline that many times to test count stability.'
+        required: false
+        default: '1'
 
 jobs:
   mutations:
@@ -107,7 +111,7 @@ jobs:
       - name: Count divergence diagnostic
         run: |
           set +e
-          node scripts/diag-guard5-count.mjs "${{ inputs.diag_spec }}" "${{ inputs.diag_mutation }}"
+          node scripts/diag-guard5-count.mjs "${{ inputs.diag_spec }}" "${{ inputs.diag_mutation }}" "${{ inputs.diag_rounds }}"
           echo "diag exit=$?"
 
       # The script reverts in a finally block, but a hard crash would skip it. Never leave a
