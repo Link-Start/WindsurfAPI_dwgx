@@ -23,7 +23,13 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 350
     steps:
+      # fetch-depth 0: the mutation harness materializes its workspace with
+      # `git clone --local` and reads history objects, so a shallow checkout fails it.
+      # Measured 2026-09-13: with the default depth 1 the sweep died on the FIRST spec
+      # with exit 2 and produced no verdict lines at all.
       - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
 
       - name: Setup Node 24
         uses: actions/setup-node@v5
@@ -38,9 +44,16 @@ jobs:
       # a real survivor never look the same.
       - name: Sweep
         run: |
+          # GitHub runs `run:` blocks under `bash -e`, which aborts the script the moment
+          # `out=$(npm run mutate ...)` returns non-zero — so `code=$?` was never read and
+          # the whole per-spec verdict logic was dead code. `set +e` is what makes the loop
+          # survive a failing spec. Measured 2026-09-13: without it the job reported one
+          # exit code and zero verdicts.
+          set +e
           set -u
           SPECS="${{ inputs.specs }}"
           if [ -z "$SPECS" ]; then SPECS=$(ls test/mutations/*.json); fi
+          echo "specs in this sweep: $(echo $SPECS | wc -w)"
           fail=0
           for s in $SPECS; do
             echo "::group::$s"
