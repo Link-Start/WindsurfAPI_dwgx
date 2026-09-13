@@ -115,6 +115,15 @@ const COMMON = ['--import', './scripts/mutation-network-deny.mjs', '--import', '
 const TAP_ARGS = [...COMMON, '--test-reporter=tap', '--test', '--test-force-exit', ...spec.tests];
 const HARNESS_ARGS = [...COMMON, '--test-reporter=./scripts/mutation-harness-utils.mjs',
   '--test', '--test-force-exit', ...spec.tests];
+// Same argv minus --test-force-exit. Node documents that flag as "exit the process once all
+// KNOWN tests have finished executing even if the event loop would otherwise remain active".
+// A truncated run finalizes a complete, self-consistent TAP document (`1..3`, `# suites 3`,
+// `# duration_ms 154`) for a file that has 11 suites, which is what "the runner believed it was
+// done" looks like -- so the flag is the leading suspect for the early exit and these are the
+// two arms that separate it.
+const TAP_ARGS_NOFX = [...COMMON, '--test-reporter=tap', '--test', ...spec.tests];
+const HARNESS_ARGS_NOFX = [...COMMON, '--test-reporter=./scripts/mutation-harness-utils.mjs',
+  '--test', ...spec.tests];
 
 banner(`guard-5 count divergence: ${specPath}`);
 console.log(`mutation            : #${idx + 1} of ${spec.mutations.length} — ${mut.name}`);
@@ -320,7 +329,50 @@ async function driftMode() {
   }
 }
 
-if (rounds > 1) {
+/**
+ * HEAD-TO-HEAD: does --test-force-exit explain the early exit?
+ *
+ * The truncated rounds finalize a complete TAP document (`1..3`, `# suites 3`) with a 154 ms
+ * duration for a file that owns 11 suites, so the runner *believed* it had finished. That is
+ * exactly what --test-force-exit is specified to do, and the flag is in BOTH `npm test` and the
+ * harness. This runs the same bytes both ways, interleaved per round so a slow runner cannot
+ * masquerade as a treatment effect.
+ */
+async function forceExitCompare() {
+  banner(`FORCE-EXIT HEAD-TO-HEAD — ${rounds} rounds, both arms from identical bytes`);
+  const withFx = new Map();
+  const noFx = new Map();
+  for (let r = 1; r <= rounds; r++) {
+    const a = tapInventory(execSuite(TAP_ARGS, ROOT).out);
+    const b = tapInventory(execSuite(TAP_ARGS_NOFX, ROOT).out);
+    withFx.set(a.tests, (withFx.get(a.tests) || 0) + 1);
+    noFx.set(b.tests, (noFx.get(b.tests) || 0) + 1);
+    console.log(`round ${String(r).padStart(3)}  with --test-force-exit: tests=${String(a.tests).padStart(3)}`
+      + `   without: tests=${String(b.tests).padStart(3)}`);
+  }
+  const dist = (m) => [...m.entries()].sort((x, y) => x[0] - y[0]).map(([k, v]) => `${k} x${v}`).join(', ');
+  banner('FORCE-EXIT RESULT');
+  console.log(`WITH    --test-force-exit : ${dist(withFx)}`);
+  console.log(`WITHOUT --test-force-exit : ${dist(noFx)}`);
+  const stableWith = withFx.size === 1;
+  const stableWithout = noFx.size === 1;
+  console.log('');
+  console.log(`stable WITH the flag    : ${stableWith}`);
+  console.log(`stable WITHOUT the flag : ${stableWithout}`);
+  if (!stableWith && stableWithout) {
+    console.log('\n>>> ROOT CAUSE: --test-force-exit is what ends the run early.');
+  } else if (stableWith && !stableWithout) {
+    console.log('\n>>> INVERTED: the flag is what keeps it stable. Do not touch it.');
+  } else if (!stableWith && !stableWithout) {
+    console.log('\n>>> BOTH ARMS DRIFT: the flag is not the cause (or not the only one).');
+  } else {
+    console.log('\n>>> BOTH ARMS STABLE on this runner: the drift did not reproduce this time.');
+  }
+}
+
+if (process.env.DIAG_COMPARE_FORCE_EXIT === '1') {
+  await forceExitCompare();
+} else if (rounds > 1) {
   await driftMode();
 } else {
   const checkout = await armCheckout();

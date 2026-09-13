@@ -27,6 +27,10 @@ on:
         description: 'Diagnostic only: >1 runs the baseline that many times to test count stability.'
         required: false
         default: '1'
+      diag_compare_force_exit:
+        description: 'Diagnostic only: 1 = run each round with AND without --test-force-exit.'
+        required: false
+        default: ''
 
 jobs:
   mutations:
@@ -109,6 +113,8 @@ jobs:
           echo "harness exit=${PIPESTATUS[0]}"
 
       - name: Count divergence diagnostic
+        env:
+          DIAG_COMPARE_FORCE_EXIT: ${{ inputs.diag_compare_force_exit }}
         run: |
           set +e
           node scripts/diag-guard5-count.mjs "${{ inputs.diag_spec }}" "${{ inputs.diag_mutation }}" "${{ inputs.diag_rounds }}"
