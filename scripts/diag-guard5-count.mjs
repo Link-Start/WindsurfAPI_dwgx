@@ -231,6 +231,7 @@ async function driftMode() {
   const seen = new Map();
   const seenTap = new Map();
   const seenNames = new Map();
+  const rounds_ = [];
   for (let r = 1; r <= rounds; r++) {
     const h = harnessInventory(execSuite(HARNESS_ARGS, ROOT));
     const tap = tapInventory(execSuite(TAP_ARGS, ROOT).out);
@@ -239,6 +240,7 @@ async function driftMode() {
     seenTap.set(String(tap.tests), (seenTap.get(String(tap.tests)) || 0) + 1);
     const nk = [...tap.names].sort().join('\u0000');
     seenNames.set(nk, (seenNames.get(nk) || 0) + 1);
+    rounds_.push({ r, h, tap });
     console.log(`round ${String(r).padStart(3)}  HARNESS tests=${h.tests} pass=${h.pass} fail=${h.fail}`
       + ` skipped=${h.skipped} cancelled=${h.cancelled} infra=${h.infrastructureFailure}`
       + `   | TAP tests=${tap.tests} pass=${tap.pass} fail=${tap.fail}  names=${tap.names.length}`);
@@ -259,6 +261,28 @@ async function driftMode() {
     console.log('    A baseline that varies run-to-run makes expectBaselinePass unsatisfiable and');
     console.log('    makes guard 5 trip at random. Fix the DIGIT STABILITY, not the declared value.');
   }
+
+  // WHICH tests disappear? A suffix means the run was CUT SHORT at a point in time; a
+  // scattered set means per-test trouble. The distinction decides the fix, so measure it.
+  const richest = rounds_.reduce((a, b) => (b.tap.names.length > a.tap.names.length ? b : a));
+  const leanest = rounds_.reduce((a, b) => (b.tap.names.length < a.tap.names.length ? b : a));
+  banner(`WHICH TESTS DISAPPEARED — round ${leanest.r} (${leanest.tap.names.length} names) vs round ${richest.r} (${richest.tap.names.length} names)`);
+  const have = new Map();
+  for (const n of leanest.tap.names) have.set(n, (have.get(n) || 0) + 1);
+  const positions = [];
+  richest.tap.names.forEach((n, i) => {
+    const c = have.get(n) || 0;
+    if (c > 0) have.set(n, c - 1); else positions.push({ i, n });
+  });
+  const total = richest.tap.names.length;
+  console.log(`missing ${positions.length} of ${total} entries. Their positions in the fullest run:`);
+  for (const p of positions.slice(0, 60)) console.log(`  #${String(p.i).padStart(3)}/${total}  ${p.n}`);
+  if (positions.length > 60) console.log(`  … and ${positions.length - 60} more`);
+  const idx = positions.map((p) => p.i).sort((a, b) => a - b);
+  const contiguousTail = idx.length > 0 && idx[idx.length - 1] === total - 1
+    && idx.every((v, k) => k === 0 || v === idx[k - 1] + 1);
+  console.log(`\nare they a contiguous TAIL of the run? ${contiguousTail ? 'YES -> the run is CUT SHORT' : 'NO -> scattered, not a simple truncation'}`);
+  console.log(`first missing index ${idx[0] ?? '-'}, last ${idx[idx.length - 1] ?? '-'}, count ${idx.length}`);
 }
 
 if (rounds > 1) {
