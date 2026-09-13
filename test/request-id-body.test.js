@@ -97,11 +97,85 @@ describe('F4 source — request id prefix migrated req- → req_', () => {
   it('no legacy req- prefix remains', () => {
     assert.doesNotMatch(src, /'req-'\s*\+\s*randomUUID/);
   });
-  it('exactly 6 req_ prefixed sites', () => {
+  it('exactly 7 req_ prefixed sites', () => {
     // The count is the point: it fails when a NEW request-id site is added, forcing
     // whoever adds it to confirm the prefix is req_ rather than the legacy req-.
     // Bumped 5 → 6 for POST /v1/completions.
-    assert.equal((src.match(/'req_'\s*\+\s*randomUUID/g) || []).length, 6);
+    // Bumped 6 → 7 for the F4(e) fallback id at the top of route(), which is what
+    // gives the auth gate / 404 fallbacks / Gemini branch a request id at all.
+    assert.equal((src.match(/'req_'\s*\+\s*randomUUID/g) || []).length, 7);
+  });
+});
+
+// F4(e): the exits that never had a request id at all.
+//
+// Measured 2026-09-13 (L8 smoke lane): `x-request-id` and the error-body `request_id`
+// were set INSIDE each route handler, so anything that returns before reaching one —
+// the auth gate (`server.js:412`), every 404 fallback (`:378`, `:397`, `:469`), and
+// the Gemini branch (`:975`, the only exit without `withRequestId`) — answered with no
+// request id at all. An operator with only the client-side error text could not match
+// it to a log line. These pin that every response carries one.
+describe('F4 every response carries a request id, including the pre-dispatch exits', () => {
+  async function bootServer() {
+    _resetLockoutForTests();
+    config.apiKey = 'test-key-f4';
+    setRuntimeApiKey('test-key-f4');
+    config.host = '127.0.0.1';
+    config.port = 0;
+    const acct = addAccountByKey('fake-key-f4', 'f4-exits');
+    if (acct?.id) createdAccounts.add(acct.id);
+    runningServer = startServer();
+    await waitListening(runningServer);
+    return runningServer.address().port;
+  }
+
+  function get(port, path, headers = {}) {
+    return new Promise((resolve, reject) => {
+      const req = http.request({ host: '127.0.0.1', port, path, method: 'GET', headers }, res => {
+        let raw = '';
+        res.on('data', (c) => { raw += c; });
+        res.on('end', () => resolve({ statusCode: res.statusCode, headers: res.headers, body: raw ? JSON.parse(raw) : null }));
+      });
+      req.on('error', reject);
+      req.end();
+    });
+  }
+
+  it('the auth-gate 401 carries x-request-id AND a body request_id equal to it', async () => {
+    const port = await bootServer();
+    const res = await postJson(port, '/v1/chat/completions',
+      { model: 'gpt-5', messages: [{ role: 'user', content: 'hi' }] },
+      { authorization: 'Bearer totally-wrong-key' });
+
+    assert.equal(res.statusCode, 401);
+    assert.match(res.headers['x-request-id'] || '', /^req_/, 'header must be present on the 401');
+    assert.equal(res.body.request_id, res.headers['x-request-id'], 'body must echo the header');
+  });
+
+  it('a 404 fallback carries a request id', async () => {
+    const port = await bootServer();
+    // NOTE: an unknown /v1/* path is NOT a reliable 404 probe — the auth gate runs
+    // first, so it answers 401. /v1/models/{unknown} reaches the real 404 exit
+    // (server.js:577) once a valid key is presented.
+    const res = await get(port, '/v1/models/totally-fake-model-xyz', { authorization: 'Bearer test-key-f4' });
+    assert.equal(res.statusCode, 404);
+    assert.match(res.headers['x-request-id'] || '', /^req_/, 'header must be present on a 404');
+  });
+
+  it('the dashboard 404 fallback carries a request id too', async () => {
+    const port = await bootServer();
+    const res = await get(port, '/dashboard/api/no-such-endpoint');
+    assert.ok(res.statusCode >= 400, `expected an error status, got ${res.statusCode}`);
+    assert.match(res.headers['x-request-id'] || '', /^req_/, 'header must be present');
+  });
+
+  it('an unknown model on the Anthropic surface still carries request-id', async () => {
+    const port = await bootServer();
+    const res = await postJson(port, '/v1/messages',
+      { model: 'totally-fake-model-xyz', max_tokens: 8, messages: [{ role: 'user', content: 'hi' }] },
+      { authorization: 'Bearer test-key-f4', 'anthropic-version': '2023-06-01' });
+    assert.ok(res.statusCode >= 400, `expected an error status, got ${res.statusCode}`);
+    assert.match(res.headers['request-id'] || res.headers['x-request-id'] || '', /^req_/);
   });
 });
 

@@ -226,6 +226,18 @@ async function route(req, res) {
   // Tolerate a doubled `/v1/v1/` prefix some clients emit.
   if (path.startsWith('/v1/v1/')) path = path.slice(3);
 
+  // Fallback request id for every exit that never reaches a route handler.
+  //
+  // Measured 2026-09-13 (L8 smoke lane): each route generated its own id and set its
+  // own header, so the auth gate (`:412`), every 404 fallback (`:378`, `:397`, `:469`)
+  // and the Gemini branch answered with NO request id. An operator holding only the
+  // client-side error text could not match it to a log line. The per-route sites keep
+  // their own ids (they override this header via writeHead) — this only guarantees the
+  // pre-dispatch paths are never id-less. `x-request-id` is the vendor-neutral name the
+  // other routes already emit; Anthropic's own `request-id` header still wins where set.
+  const fallbackRequestId = 'req_' + randomUUID();
+  res.setHeader('x-request-id', fallbackRequestId);
+
   // Cline compatibility layer resolution (see src/handlers/cline-compat.js).
   // The dedicated /v1/cline/* namespace is an explicit opt-in that a partner
   // points Cline at, so it activates the compat shims regardless of the master
@@ -375,7 +387,7 @@ async function route(req, res) {
       res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8' });
       return res.end(content);
     } catch {
-      return json(res, 404, { error: 'Locale file not found' });
+      return json(res, 404, withRequestId(404, { error: 'Locale file not found' }, fallbackRequestId));
     }
   }
 
@@ -394,7 +406,7 @@ async function route(req, res) {
       res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8' });
       return res.end(content);
     } catch {
-      return json(res, 404, { error: 'Data file not found' });
+      return json(res, 404, withRequestId(404, { error: 'Data file not found' }, fallbackRequestId));
     }
   }
 
@@ -409,7 +421,7 @@ async function route(req, res) {
     const message = tokenSent
       ? 'Invalid API key. Either the key is wrong, or the server has API_KEY configured to a different value than the one your client sent.'
       : 'Missing API key. This server runs in fail-closed mode: requests must include `Authorization: Bearer <key>` (or `x-api-key: <key>`) matching the configured API_KEY env var. If you intend to run open (no auth), bind the server to localhost (HOST=127.0.0.1).';
-    return json(res, 401, { error: { message, type: 'auth_error' } });
+    return json(res, 401, withRequestId(401, { error: { message, type: 'auth_error' } }, fallbackRequestId));
   }
 
   // ─── Auth management (admin — gated by API key above) ──
