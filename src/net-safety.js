@@ -52,6 +52,64 @@ function ipv6StartsWith(ip, prefix, bits) {
   return true;
 }
 
+// ─── IPv4-in-IPv6 carrier prefixes ─────────────────────────
+//
+// isPrivateIp must block "private space", and these prefixes CARRY an IPv4
+// address in their low bits. Blocking v4 private space while letting its
+// carriers through is a bypass: measured 2026-09-13, all of
+// `64:ff9b:1::7f00:1` (NAT64 local-use, RFC 8215), `2002:7f00:1::1` (6to4,
+// RFC 3056), `2001:0:c0a8:101::1` (Teredo, RFC 4380) and `::127.0.0.1`
+// (v4-compatible) returned false while embedding loopback/RFC1918. The surface
+// is real: src/image.js:423/436 gates image fetches on this, and net-safety's
+// own proxy checks (:150/:158/:190/:203/:206) throw ERR_PROXY_PRIVATE_IP on it.
+
+/**
+ * Last 32 bits of an expanded IPv6 as a dotted quad — for the prefixes whose
+ * embedded IPv4 sits in the LOW 32 bits: NAT64 (well-known `64:ff9b::/96` and
+ * local-use `64:ff9b:1::/48`) and v4-compatible `::a.b.c.d`.
+ *
+ * The words are 6 and 7, NOT 4 and 5. Getting that wrong is silent: the
+ * extracted "v4" reads 0.0.0.0, the caller is told the embedded address is not
+ * private, and `::127.0.0.1` stays reachable. The first version of this fix had
+ * exactly that defect — the tests caught it.
+ */
+function trailingIpv4(parts) {
+  if (!parts || parts.length !== 8) return null;
+  return `${parts[6] >>> 8}.${parts[6] & 255}.${parts[7] >>> 8}.${parts[7] & 255}`;
+}
+
+/** 6to4 2002::/16 — the embedded v4 is bits 16..48, i.e. words 1 and 2. */
+function sixtofourIpv4(parts) {
+  if (!parts || parts.length !== 8) return null;
+  return `${parts[1] >>> 8}.${parts[1] & 255}.${parts[2] >>> 8}.${parts[2] & 255}`;
+}
+
+/** Teredo 2001:0::/32 — the client v4 is bits 64..96, stored one's-complemented. */
+function teredoClientIpv4(parts) {
+  if (!parts || parts.length !== 8) return null;
+  const b = [parts[6] >>> 8, parts[6] & 255, parts[7] >>> 8, parts[7] & 255].map((x) => (~x) & 255);
+  return `${b[0]}.${b[1]}.${b[2]}.${b[3]}`;
+}
+
+/**
+ * `::a.b.c.d` → `::aa:bb:cc:dd`, for the v4-COMPATIBLE branch only.
+ *
+ * Why: a dotted quad is ONE colon-separated field, so `'::127.0.0.1'.split(':')`
+ * is `['', '', '127.0.0.1']` and expandIpv6 yields fewer than 8 words, which
+ * makes trailingIpv4 return null. Note the asymmetry this hides: expandIpv6 DOES
+ * splice a dotted quad into two words when it sits in the right-hand group of a
+ * longer address — that is why the 6to4 / Teredo branches worked first try and
+ * this one did not.
+ */
+function v4CompatibleToHexGroups(ip) {
+  const m = ip.match(/^::(\d+\.\d+\.\d+\.\d+)$/);
+  if (!m) return null;
+  const n = ipv4ToInt(m[1]);
+  if (n == null) return null;
+  const g = (x) => x.toString(16).padStart(4, '0');
+  return `::${g((n >>> 16) & 0xffff)}:${g(n & 0xffff)}`;
+}
+
 function mappedIpv4(ip) {
   const m = ip.toLowerCase().match(/^::ffff:(\d+\.\d+\.\d+\.\d+)$/);
   if (m) return m[1];
@@ -69,6 +127,18 @@ export function isPrivateIp(address) {
   const mapped = mappedIpv4(ip);
   if (mapped) return isPrivateIp(mapped);
   const family = net.isIP(ip);
+  // v4-compatible \`::a.b.c.d\` carries an IPv4 in its low bits and is not a normal
+  // address family — net.isIP may report 0 for exotic spellings, which would fall
+  // straight through to \`return false\`. Handled before the family switch because
+  // there is no family to switch on.
+  if (family === 0) {
+    const cp = expandIpv6(v4CompatibleToHexGroups(ip) || ip);
+    if (cp && cp.slice(0, 6).every((n) => n === 0)) {
+      const compat = trailingIpv4(cp);
+      if (compat && compat !== '0.0.0.0') return isPrivateIp(compat);
+    }
+    return false;
+  }
   if (family === 4) {
     return ipv4InCidr(ip, '0.0.0.0', 8)
       || ipv4InCidr(ip, '10.0.0.0', 8)
@@ -90,6 +160,27 @@ export function isPrivateIp(address) {
       || ipv4InCidr(ip, '240.0.0.0', 4);      // reserved / future use (240/4)
   }
   if (family === 6) {
+    const parts = expandIpv6(v4CompatibleToHexGroups(ip) || ip);
+    // Carrier prefixes whose low bits ARE an IPv4 address: recurse on the embedded
+    // v4 so private/loopback cannot be smuggled in through them. The \`64:ff9b::\`
+    // branch below stays the well-known NAT64 prefix; this set adds the local-use
+    // NAT64 prefix plus 6to4 / Teredo / v4-compatible.
+    if (parts && parts.slice(0, 6).every((n) => n === 0)) {
+      const compat = trailingIpv4(parts);
+      if (compat && compat !== '0.0.0.0') return isPrivateIp(compat);
+    }
+    if (parts && parts[0] === 0x0064 && parts[1] === 0xff9b && parts[2] === 0x0001) {
+      const nat64Local = trailingIpv4(parts);
+      if (nat64Local) return isPrivateIp(nat64Local);
+    }
+    if (ipv6StartsWith(ip, '2002::', 16)) {
+      const six = sixtofourIpv4(parts);
+      if (six) return isPrivateIp(six);
+    }
+    if (ipv6StartsWith(ip, '2001:0::', 32)) {
+      const teredo = teredoClientIpv4(parts);
+      if (teredo) return isPrivateIp(teredo);
+    }
     return ip === '::' || ip === '::1'
       || ipv6StartsWith(ip, 'fc00::', 7)
       || ipv6StartsWith(ip, 'fe80::', 10)

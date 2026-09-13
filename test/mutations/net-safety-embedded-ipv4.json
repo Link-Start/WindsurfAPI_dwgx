@@ -1,0 +1,41 @@
+{
+  "tests": [
+    "test/net-safety-embedded-ipv4.test.js"
+  ],
+  "expectBaselinePass": 18,
+  "mutations": [
+    {
+      "name": "trailingIpv4 reads words 4/5 instead of 6/7 — the extracted 'embedded v4' becomes 0.0.0.0, so NAT64 (both prefixes) and v4-compatible ::a.b.c.d are reported as NOT private and reach image.js's fetch. This was the real bug: the first version of the fix had it, and the failure was silent",
+      "file": "src/net-safety.js",
+      "anchor": "function trailingIpv4(parts) {\n  if (!parts || parts.length !== 8) return null;\n  return `${parts[6] >>> 8}.${parts[6] & 255}.${parts[7] >>> 8}.${parts[7] & 255}`;",
+      "replacement": "function trailingIpv4(parts) {\n  if (!parts || parts.length !== 8) return null;\n  return `${parts[4] >>> 8}.${parts[4] & 255}.${parts[5] >>> 8}.${parts[5] & 255}`;"
+    },
+    {
+      "name": "NAT64 local-use prefix branch removed — 64:ff9b:1::/48 (RFC 8215) stops recursing on its embedded v4, so 64:ff9b:1::7f00:1 reads as public",
+      "file": "src/net-safety.js",
+      "anchor": "    if (parts && parts[0] === 0x0064 && parts[1] === 0xff9b && parts[2] === 0x0001) {",
+      "replacement": "    if (false) {"
+    },
+    {
+      "name": "6to4 branch removed — 2002::/16 stops recursing, so 2002:7f00:1::1 (carries 127.0.0.1) reads as public",
+      "file": "src/net-safety.js",
+      "anchor": "    if (ipv6StartsWith(ip, '2002::', 16)) {\n      const six = sixtofourIpv4(parts);\n      if (six) return isPrivateIp(six);\n    }",
+      "replacement": "    if (ipv6StartsWith(ip, '2002::', 16)) {\n      const six = null;\n      if (six) return isPrivateIp(six);\n    }"
+    },
+    {
+      "name": "Teredo branch removed — 2001:0::/32 stops recursing on the one's-complemented client v4",
+      "file": "src/net-safety.js",
+      "anchor": "    if (ipv6StartsWith(ip, '2001:0::', 32)) {\n      const teredo = teredoClientIpv4(parts);\n      if (teredo) return isPrivateIp(teredo);\n    }",
+      "replacement": "    if (ipv6StartsWith(ip, '2001:0::', 32)) {\n      const teredo = null;\n      if (teredo) return isPrivateIp(teredo);\n    }"
+    },
+    {
+      "name": "OVER-BLOCK CONTROL — the v4-compatible recurse fires for ::0.0.0.0 too, i.e. the guard starts treating the unspecified address as embedded-private",
+      "file": "src/net-safety.js",
+      "anchor": "      if (compat && compat !== '0.0.0.0') return isPrivateIp(compat);\n    }\n    return false;\n  }",
+      "replacement": "      if (compat) return isPrivateIp(compat);\n    }\n    return false;\n  }",
+      "expectCaught": false
+    }
+  ],
+  "_known_redundancy": "v4CompatibleToHexGroups is dead code: measured 2026-09-13, with trailingIpv4 reading the right words (6/7), expandIpv6 already parses '::127.0.0.1' correctly, so both call sites of the helper are no-ops and removing them changes no answer for any tested input. It is left in place because the removal edit is where this file was broken twice; deleting it is a follow-up with its own test run, not a rider on this fix.",
+  "_not_covered": "No mutation pins the v4-compatible normalisation call site because no mutation of it can be caught — that is what 'redundant' means here. The carrier prefixes (NAT64 local-use, 6to4, Teredo) and the trailingIpv4 word choice ARE pinned."
+}
