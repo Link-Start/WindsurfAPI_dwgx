@@ -5,8 +5,66 @@ on:
     branches: [master]
   pull_request:
     branches: [master]
+  # Manual mutation sweep (Actions -> CI -> Run workflow). Deliberately NOT on the PR path:
+  # each mutation re-runs its spec's whole test suite, so all 42 specs is hours, and a gate
+  # nobody can afford to run is worse than no gate — that is the warning in the specs job's
+  # own comment. Until 2026-09-13 nothing in this repo ever executed `npm run mutate`.
+  workflow_dispatch:
+    inputs:
+      specs:
+        description: 'Spec files to run (space separated). Blank = every test/mutations/*.json'
+        required: false
+        default: ''
 
 jobs:
+  mutations:
+    name: Mutation specs (manual)
+    if: github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    timeout-minutes: 350
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Setup Node 24
+        uses: actions/setup-node@v5
+        with:
+          node-version: '24'
+
+      # Runs each spec in its own process and prints a one-line verdict per spec, so a
+      # failure names a spec instead of burying it in an interleaved log.
+      #
+      # `baseline pass=N but spec expects M` is NOT a survivor — mutate-verify refuses to
+      # score that spec, and this step reports it as SKIPPED-STALE so a stale baseline and
+      # a real survivor never look the same.
+      - name: Sweep
+        run: |
+          set -u
+          SPECS="${{ inputs.specs }}"
+          if [ -z "$SPECS" ]; then SPECS=$(ls test/mutations/*.json); fi
+          fail=0
+          for s in $SPECS; do
+            echo "::group::$s"
+            out=$(npm run --silent mutate -- "$s" 2>&1); code=$?
+            echo "$out"
+            echo "::endgroup::"
+            caught=$(printf '%s' "$out" | grep -c 'CAUGHT' || true)
+            survived=$(printf '%s' "$out" | grep -c 'SURVIVED' || true)
+            if printf '%s' "$out" | grep -q 'spec expects'; then
+              echo "VERDICT $s SKIPPED-STALE (baseline drift — no verdict is trustworthy)"
+              fail=1
+            elif [ $code -ne 0 ]; then
+              echo "VERDICT $s FAIL exit=$code CAUGHT=$caught SURVIVED=$survived"
+              fail=1
+            else
+              echo "VERDICT $s OK CAUGHT=$caught SURVIVED=$survived"
+            fi
+          done
+          exit $fail
+
+      - name: Summary
+        if: always()
+        run: echo "Verdicts are the 'VERDICT <spec> ...' lines above — one per spec."
+
   syntax:
     name: Node syntax check
     runs-on: ubuntu-latest
