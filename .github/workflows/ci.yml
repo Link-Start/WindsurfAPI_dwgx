@@ -6,7 +6,7 @@ on:
   pull_request:
     branches: [master]
   # Manual mutation sweep (Actions -> CI -> Run workflow). Deliberately NOT on the PR path:
-  # each mutation re-runs its spec's whole test suite, so all 42 specs is hours, and a gate
+  # each mutation re-runs its spec's whole test suite, so all 44 specs is hours, and a gate
   # nobody can afford to run is worse than no gate — that is the warning in the specs job's
   # own comment. Until 2026-09-13 nothing in this repo ever executed `npm run mutate`.
   workflow_dispatch:
@@ -15,6 +15,14 @@ on:
         description: 'Spec files to run (space separated). Blank = every test/mutations/*.json'
         required: false
         default: ''
+      diag_spec:
+        description: 'Diagnostic only: one spec to instrument for the guard-5 count divergence. Blank = skip that job.'
+        required: false
+        default: ''
+      diag_mutation:
+        description: 'Diagnostic only: 1-based mutation index whose count diverges.'
+        required: false
+        default: '1'
 
 jobs:
   mutations:
@@ -64,6 +72,51 @@ jobs:
       - name: Summary
         if: always()
         run: echo "Verdicts are the 'VERDICT <spec> ...' lines above — one per spec."
+
+  # Diagnostic for the guard-5 count divergence (2026-09-13 sweep: 8 specs aborted with
+  # "changed how many tests RAN"). Manual only, never a gate: it re-runs one spec's suite up
+  # to six times and prints full TAP, far too slow and noisy for the PR path. What it
+  # measures, and which hypotheses it was built to separate, is documented in
+  # scripts/diag-guard5-count.mjs and tmp/audit/VERIFICATION-LOG.md section 18.
+  diag-guard5:
+    name: Guard-5 count divergence (diagnostic)
+    if: github.event_name == 'workflow_dispatch' && inputs.diag_spec != ''
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          # materializeMutationWorkspace() clones with `git clone --local`, which needs real
+          # history; the default fetch-depth: 1 makes that clone fail (learned the hard way
+          # when the first sweep produced zero verdicts).
+          fetch-depth: 0
+
+      - name: Setup Node 24
+        uses: actions/setup-node@v5
+        with:
+          node-version: '24'
+
+      # Reproduce the verdict FIRST, so the diagnostic demonstrably explains the same failure
+      # rather than a lookalike. mutate-verify refuses to run on a dirty tree.
+      - name: Reproduce the harness verdict
+        run: |
+          set +e
+          npm run --silent mutate -- "${{ inputs.diag_spec }}" 2>&1 | tail -40
+          echo "harness exit=${PIPESTATUS[0]}"
+
+      - name: Count divergence diagnostic
+        run: |
+          set +e
+          node scripts/diag-guard5-count.mjs "${{ inputs.diag_spec }}" "${{ inputs.diag_mutation }}"
+          echo "diag exit=$?"
+
+      # The script reverts in a finally block, but a hard crash would skip it. Never leave a
+      # mutated product file behind for a later step to read.
+      - name: Restore any mutated file
+        if: always()
+        run: |
+          git checkout HEAD -- .
+          git status --short
 
   syntax:
     name: Node syntax check

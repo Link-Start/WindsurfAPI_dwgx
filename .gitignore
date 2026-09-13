@@ -41,6 +41,7 @@ scripts/*
 !scripts/mutate-verify-dirty.mjs
 !scripts/mutation-harness-utils.mjs
 !scripts/mutation-network-deny.mjs
+!scripts/diag-guard5-count.mjs
 src/get-token.js
 src/test-cascade.js
 src/runtime-config.json
