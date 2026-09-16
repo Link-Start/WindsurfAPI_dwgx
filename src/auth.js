@@ -3665,17 +3665,36 @@ export async function searchWebForAccount(id, { query, limit, domain } = {}) {
  * on the account. Used by manual refresh and by the 15-minute background loop.
  * Errors are returned in-band so the dashboard can show them without throwing.
  */
+const _creditInFlight = new Map();
+
 export async function refreshCredits(id) {
+  const existing = _creditInFlight.get(id);
+  if (existing) return existing;
+
   const account = accounts.find(a => a.id === id);
   if (!account) return { ok: false, error: 'Account not found' };
+
+  const promise = _refreshCreditsImpl(account).finally(() => {
+    if (_creditInFlight.get(id) === promise) _creditInFlight.delete(id);
+  });
+  _creditInFlight.set(id, promise);
+  return promise;
+}
+
+async function _refreshCreditsImpl(account) {
+  const id = account.id;
+  const apiKey = account.apiKey;
   try {
     const { getUserStatus } = await import('./windsurf-api.js');
     const proxy = getEffectiveProxy(account.id) || null;
-    const status = await getUserStatus(account.apiKey, proxy);
+    const status = await getUserStatus(apiKey, proxy);
     // Drop the huge raw payload before persisting — keep it only in memory for
     // downstream callers (e.g. model catalog cache) to inspect once.
     const { raw, ...persist } = status;
-    account.credits = persist;
+    // Publish once after both reads settle. Readers keep the last complete
+    // snapshot while the billing RPC is in flight; no half-updated object leaks.
+    delete persist.rateTable;
+    delete persist.rateTableFetchedAt;
     // B: on-demand balance + billing period. The REST getUserStatus `raw` is a
     // PARSED JSON object, not protobuf bytes — feeding it to decodeUserStatusFull
     // (a byte parser) always returned empty, so the on-demand balance never
@@ -3691,11 +3710,11 @@ export async function refreshCredits(id) {
       // "which models are free RIGHT NOW" — was never available. GLM-5.2's free
       // status is a rolling promotion while MODELS hardcodes credit: 1.5, which is
       // why users burned paid quota on a model the app showed as free (#235).
-      const billing = await fetchUserStatus({ token: account.apiKey, withCatalog: true });
+      const billing = await fetchUserStatus({ token: apiKey, withCatalog: true });
       if (billing) {
-        if (billing.balance != null) account.credits.balance = billing.balance;
-        if (billing.periodStart) account.credits.periodStart = billing.periodStart;
-        if (billing.periodEnd) account.credits.periodEnd = billing.periodEnd;
+        if (billing.balance != null) persist.balance = billing.balance;
+        if (billing.periodStart) persist.periodStart = billing.periodStart;
+        if (billing.periodEnd) persist.periodEnd = billing.periodEnd;
         // Only a PAIRED rate table (selector-keyed object) is usable. An unpaired
         // array means the catalog fetch failed, and positional floats without their
         // selectors cannot be attributed to a model.
@@ -3710,11 +3729,11 @@ export async function refreshCredits(id) {
           ? billing.rateTable
           : null;
         if (paired && Object.keys(paired).length > 0) {
-          account.credits.rateTable = paired;
-          account.credits.rateTableFetchedAt = Date.now();
+          persist.rateTable = paired;
+          persist.rateTableFetchedAt = Date.now();
         } else {
-          delete account.credits.rateTable;
-          delete account.credits.rateTableFetchedAt;
+          delete persist.rateTable;
+          delete persist.rateTableFetchedAt;
         }
       }
     } catch (billingErr) {
@@ -3725,6 +3744,12 @@ export async function refreshCredits(id) {
     // it out to eat 402s) and a recovered account is uncooled immediately. This
     // rides the existing 15-min refreshAllCredits timer (B3) — no new timer.
     // Self-healing and NEVER permanent (see applyQuotaSnapshot).
+    // A re-login/removal can change the account while either RPC is pending.
+    // Never publish an old credential's snapshot onto the new account lifetime.
+    if (!accounts.includes(account) || account.apiKey !== apiKey) {
+      return { ok: false, error: 'Account changed during credit refresh' };
+    }
+    account.credits = persist;
     applyQuotaSnapshot(account, persist.weeklyPercent);
     // Tier hint: if the plan info is explicit, prefer it over capability probing.
     // Trial / individual accounts also count as pro — Windsurf returns
@@ -3747,6 +3772,9 @@ export async function refreshCredits(id) {
     // the bundled model catalog from it.
     return { ok: true, credits: persist, raw };
   } catch (e) {
+    if (!accounts.includes(account) || account.apiKey !== apiKey) {
+      return { ok: false, error: 'Account changed during credit refresh' };
+    }
     const msg = e.message || String(e);
     log.warn(`refreshCredits ${id} failed: ${msg}`);
     // Stash the error on the account so the dashboard can show "last refresh

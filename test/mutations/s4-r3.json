@@ -1,0 +1,50 @@
+{
+  "tests": [
+    "test/s4-r3.test.js"
+  ],
+  "mutations": [
+    {
+      "name": "Same-account coalescing is disabled",
+      "file": "src/auth.js",
+      "anchor": "  const existing = _creditInFlight.get(id);\n  if (existing) return existing;",
+      "replacement": "  const existing = null;",
+      "expectCaught": true
+    },
+    {
+      "name": "REST snapshot escapes before billing completes",
+      "file": "src/auth.js",
+      "anchor": "    delete persist.rateTable;\n    delete persist.rateTableFetchedAt;",
+      "replacement": "    account.credits = persist;\n    delete persist.rateTable;\n    delete persist.rateTableFetchedAt;",
+      "expectCaught": true
+    },
+    {
+      "name": "Failed or absent billing retains stale paired data",
+      "file": "src/auth.js",
+      "anchor": "    delete persist.rateTable;\n    delete persist.rateTableFetchedAt;",
+      "replacement": "    // Mutant: retain stale REST rate fields.",
+      "expectCaught": true
+    },
+    {
+      "name": "Published table lacks its timestamp",
+      "file": "src/auth.js",
+      "anchor": "          persist.rateTableFetchedAt = Date.now();",
+      "replacement": "          // Mutant: publish an unpaired table.",
+      "expectCaught": true
+    },
+    {
+      "name": "Settled refresh remains in the flight map",
+      "file": "src/auth.js",
+      "anchor": "    if (_creditInFlight.get(id) === promise) _creditInFlight.delete(id);",
+      "replacement": "    // Mutant: never release the settled flight.",
+      "expectCaught": true
+    },
+    {
+      "name": "Old credential snapshot may publish after rotation",
+      "file": "src/auth.js",
+      "anchor": "    if (!accounts.includes(account) || account.apiKey !== apiKey) {\n      return { ok: false, error: 'Account changed during credit refresh' };\n    }\n    account.credits = persist;",
+      "replacement": "    account.credits = persist;",
+      "expectCaught": true
+    }
+  ],
+  "expectBaselinePass": 6
+}
