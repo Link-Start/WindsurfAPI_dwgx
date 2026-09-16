@@ -25,10 +25,14 @@
 import { readFileSync, readdirSync, existsSync } from 'node:fs';
 import { execFileSync } from 'node:child_process';
 import { join } from 'node:path';
-import {
-  acquireMutationLock, harnessEnv, materializeMutationWorkspace,
-  parseMutationReporterOutput,
-} from './mutation-harness-utils.mjs';
+let acquireMutationLock, harnessEnv, materializeMutationWorkspace, parseMutationReporterOutput;
+try {
+  ({ acquireMutationLock, harnessEnv, materializeMutationWorkspace, parseMutationReporterOutput } =
+    await import('./mutation-harness-utils.mjs'));
+} catch (error) {
+  console.error(`spec-baseline-audit: infrastructure unavailable: ${error.message}`);
+  process.exit(2);
+}
 
 const SOURCE_ROOT = process.cwd();
 const SPEC_DIR = join(SOURCE_ROOT, 'test', 'mutations');
@@ -72,10 +76,20 @@ function measure(tests) {
   return parseMutationReporterOutput(stdout, stderr, executionFailure);
 }
 
-const specs = readdirSync(SPEC_DIR)
-  .filter((f) => f.endsWith('.json'))
-  .filter((f) => !filter || f.includes(filter))
-  .sort();
+let specs;
+try {
+  specs = readdirSync(SPEC_DIR)
+    .filter((f) => f.endsWith('.json'))
+    .filter((f) => !filter || f.includes(filter))
+    .sort();
+} catch (error) {
+  console.error(`spec-baseline-audit: cannot discover specs: ${error.message}`);
+  process.exit(2);
+}
+if (!specs.length) {
+  console.error('spec-baseline-audit: zero selected specs; evidence is untrustworthy');
+  process.exit(2);
+}
 
 let drift = 0;
 let untrustworthy = 0;
@@ -91,16 +105,28 @@ catch (err) {
   process.exit(2);
 }
 
+try {
 for (const name of specs) {
-  const spec = JSON.parse(readFileSync(join(SPEC_DIR, name), 'utf8'));
-  if (typeof spec.expectBaselinePass !== 'number') continue;
-  const tests = spec.tests || [];
-  if (!tests.length) continue;
   total++;
+  let spec;
+  try { spec = JSON.parse(readFileSync(join(SPEC_DIR, name), 'utf8')); }
+  catch (error) {
+    untrustworthy++;
+    console.error(`! ${name} invalid JSON: ${error.message}`);
+    continue;
+  }
+  const tests = spec.tests;
+  if (!Number.isSafeInteger(spec.expectBaselinePass) || spec.expectBaselinePass <= 0
+      || !Array.isArray(tests) || !tests.length || tests.some(t => typeof t !== 'string')) {
+    untrustworthy++;
+    console.error(`! ${name} missing or invalid baseline/test-file evidence`);
+    continue;
+  }
 
-  // Skip specs whose files don't exist — the static check reports those; don't crash here.
+  // Missing files invalidate evidence even when the static check was not run.
   if (tests.some((t) => !existsSync(join(process.cwd(), t)))) {
-    console.log(`${C.yellow}~${C.reset} ${name}  (missing test file — see spec-static-check)`);
+    untrustworthy++;
+    console.log(`${C.red}!${C.reset} ${name}  (missing test file — evidence untrustworthy)`);
     continue;
   }
 
@@ -125,10 +151,10 @@ for (const name of specs) {
   } else {
     drift++;
     console.log(`${C.red}✗${C.reset} ${name}  expected=${spec.expectBaselinePass} measured=${pass} (fail=${fail})`);
-    console.log(`     fix: change expectBaselinePass to ${pass}`);
+    console.log(`     review: reproduce baseline=${pass}, inspect the changed test set, then update with provenance`);
   }
 }
 
-releaseMutationLock?.();
+} finally { releaseMutationLock?.(); }
 console.log(`\n${C.bold}spec-baseline-audit${C.reset}: ${total - drift - untrustworthy}/${total} match, ${drift} drifted, ${untrustworthy} untrustworthy`);
 process.exit(untrustworthy ? 2 : drift ? 1 : 0);

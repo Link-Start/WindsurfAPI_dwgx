@@ -15,6 +15,10 @@ on:
         description: 'Spec files to run (space separated). Blank = every test/mutations/*.json'
         required: false
         default: ''
+      shard:
+        description: 'Zero-based shard i/N (0/1 = all selected specs)'
+        required: false
+        default: '0/1'
 
 jobs:
   mutations:
@@ -36,47 +40,37 @@ jobs:
         with:
           node-version: '24'
 
-      # Runs each spec in its own process and prints a one-line verdict per spec, so a
-      # failure names a spec instead of burying it in an interleaved log.
-      #
-      # `baseline pass=N but spec expects M` is NOT a survivor — mutate-verify refuses to
-      # score that spec, and this step reports it as SKIPPED-STALE so a stale baseline and
-      # a real survivor never look the same.
-      - name: Sweep
-        run: |
-          # GitHub runs `run:` blocks under `bash -e`, which aborts the script the moment
-          # `out=$(npm run mutate ...)` returns non-zero — so `code=$?` was never read and
-          # the whole per-spec verdict logic was dead code. `set +e` is what makes the loop
-          # survive a failing spec. Measured 2026-09-13: without it the job reported one
-          # exit code and zero verdicts.
-          set +e
-          set -u
-          SPECS="${{ inputs.specs }}"
-          if [ -z "$SPECS" ]; then SPECS=$(ls test/mutations/*.json); fi
-          echo "specs in this sweep: $(echo $SPECS | wc -w)"
-          fail=0
-          for s in $SPECS; do
-            echo "::group::$s"
-            out=$(npm run --silent mutate -- "$s" 2>&1); code=$?
-            echo "$out"
-            echo "::endgroup::"
-            caught=$(printf '%s' "$out" | grep -c 'CAUGHT' || true)
-            survived=$(printf '%s' "$out" | grep -c 'SURVIVED' || true)
-            if printf '%s' "$out" | grep -q 'spec expects'; then
-              echo "VERDICT $s SKIPPED-STALE (baseline drift — no verdict is trustworthy)"
-              fail=1
-            elif [ $code -ne 0 ]; then
-              echo "VERDICT $s FAIL exit=$code CAUGHT=$caught SURVIVED=$survived"
-              fail=1
-            else
-              echo "VERDICT $s OK CAUGHT=$caught SURVIVED=$survived"
-            fi
-          done
-          exit $fail
+      - name: Install dependencies
+        run: npm ci
 
-      - name: Summary
+      # PR/push jobs intentionally do not execute mutation specs: this is a cost boundary.
+      # Optional parallel form (replace the input shard with matrix.shard in Sweep):
+      # strategy:
+      #   fail-fast: false
+      #   matrix:
+      #     shard: ['0/4', '1/4', '2/4', '3/4']
+      # Put strategy at the mutations job level, not inside steps. Each job has its own
+      # checkout, manifest and artifact; never run two shards in one owner worktree.
+      - name: Sweep
+        env:
+          REQUESTED_SPECS: ${{ inputs.specs }}
+          REQUESTED_SHARD: ${{ inputs.shard }}
+        run: |
+          args=(--shard "${REQUESTED_SHARD:-0/1}" --report-dir "$RUNNER_TEMP/mutation-report")
+          if [ -n "$REQUESTED_SPECS" ]; then args+=(--specs "$REQUESTED_SPECS"); fi
+          node scripts/mutation-sweep.mjs "${args[@]}"
+
+      - name: Assert verdict coverage
         if: always()
-        run: echo "Verdicts are the 'VERDICT <spec> ...' lines above — one per spec."
+        run: node scripts/mutation-sweep.mjs --verify "$RUNNER_TEMP/mutation-report"
+
+      - name: Publish mutation evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: mutation-report-${{ github.run_id }}-${{ strategy.job-index || 0 }}
+          path: ${{ runner.temp }}/mutation-report/
+          if-no-files-found: error
 
   syntax:
     name: Node syntax check

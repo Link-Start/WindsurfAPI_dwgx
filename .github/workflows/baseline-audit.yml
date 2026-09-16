@@ -1,0 +1,38 @@
+name: Baseline audit
+
+on:
+  workflow_dispatch:
+  schedule:
+    # Monday 03:23 UTC / 12:23 Japan time. Scheduled runs use the default branch.
+    - cron: '23 3 * * 1'
+
+permissions:
+  contents: read
+
+jobs:
+  audit:
+    name: Baseline values (post-merge, not PR)
+    runs-on: ubuntu-latest
+    timeout-minutes: 350
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-node@v5
+        with:
+          node-version: '24'
+      - run: npm ci
+      - name: Validate spec evidence
+        run: node scripts/spec-static-check.mjs
+      - name: Audit pinned baselines
+        shell: bash
+        run: |
+          set -o pipefail
+          npm run audit:baselines 2>&1 | tee "$RUNNER_TEMP/baseline-audit.log"
+      - name: Publish evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: baseline-audit-${{ github.run_id }}
+          path: ${{ runner.temp }}/baseline-audit.log
+          if-no-files-found: warn

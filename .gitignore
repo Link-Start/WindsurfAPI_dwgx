@@ -17,6 +17,7 @@ deploy-us.py
 # `git status` still reported the same file count as before.
 scripts/*
 !scripts/gen-star-history.mjs
+!scripts/local-gate.mjs
 !scripts/native-bridge-smoke.mjs
 !scripts/special-agent-smoke.mjs
 !scripts/lsp-capacity-matrix.mjs
@@ -24,6 +25,7 @@ scripts/*
 !scripts/sync-docs-contributors.mjs
 !scripts/secret-scan.mjs
 !scripts/run-test-shard.mjs
+!scripts/run-tests.mjs
 !scripts/spec-static-check.mjs
 !scripts/spec-baseline-audit.mjs
 !scripts/s2-a-bench.mjs
@@ -41,6 +43,7 @@ scripts/*
 !scripts/exe-boot-smoke.mjs
 !scripts/verify-release-version.mjs
 !scripts/mutate-verify.mjs
+!scripts/mutation-sweep.mjs
 !scripts/mutate-verify-dirty.mjs
 !scripts/mutation-harness-utils.mjs
 !scripts/mutation-network-deny.mjs

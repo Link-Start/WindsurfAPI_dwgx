@@ -10,7 +10,7 @@
   "scripts": {
     "start": "node src/index.js",
     "dev": "node --watch src/index.js",
-    "test": "node --import ./test/setup-env.mjs --test test/*.test.js",
+    "test": "node scripts/run-tests.mjs",
     "test:shard": "node scripts/run-test-shard.mjs",
     "test:release": "node scripts/run-test-shard.mjs 0 1",
     "mutate": "node scripts/mutate-verify.mjs",
@@ -23,12 +23,14 @@
     "login:devin": "node scripts/devin-connect-login.mjs",
     "smoke:lsp-matrix": "node scripts/lsp-capacity-matrix.mjs",
     "probe:web-search": "node scripts/web-search-direct-probe.mjs",
+    "gate": "node scripts/local-gate.mjs",
     "sync:contributors": "node scripts/sync-docs-contributors.mjs",
     "secret-scan": "node scripts/secret-scan.mjs",
     "build:bundle": "esbuild src/index.js --bundle --platform=node --format=cjs --target=node22 --outfile=src/_bundle.cjs --external:node:* --define:import.meta.url=__WA_IMPORT_META_URL__ --banner:js=\"const __WA_IMPORT_META_URL__=require('node:url').pathToFileURL(__filename).href;\"",
     "build:exe": "npm run build:bundle && pkg src/_bundle.cjs --config package.json --targets node22-win-x64 --output dist-windows/windsurfapi.exe",
     "build:exe:macos": "npm run build:bundle && pkg src/_bundle.cjs --config package.json --targets node22-macos-arm64 --output dist-macos/windsurfapi-macos-arm64",
     "build:exe:macos-x64": "npm run build:bundle && pkg src/_bundle.cjs --config package.json --targets node22-macos-x64 --output dist-macos/windsurfapi-macos-x64",
+    "audit:baselines": "node scripts/spec-baseline-audit.mjs",
     "smoke:exe": "node scripts/exe-boot-smoke.mjs"
   },
   "pkg": {
