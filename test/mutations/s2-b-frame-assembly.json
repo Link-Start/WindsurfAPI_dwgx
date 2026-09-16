@@ -1,0 +1,66 @@
+{
+  "tests": [
+    "test/s2-b-connect.test.js",
+    "test/s2-b-grpc.test.js",
+    "test/s2-b-grpc-limit.test.js"
+  ],
+  "expectBaselinePass": 23,
+  "mutations": [
+    {
+      "name": "B-length: read the Connect length little-endian",
+      "file": "src/connect.js",
+      "anchor": "      for (let i = 1; i < 5; i++) len = len * 256 + this._byteAt(i);",
+      "replacement": "      for (let i = 1; i < 5; i++) len += this._byteAt(i) * 2 ** (8 * (i - 1));",
+      "expectCaught": true
+    },
+    {
+      "name": "B-boundary: do not advance at an exact header chunk end",
+      "file": "src/connect.js",
+      "anchor": "  _byteAt(relative) {\n    let index = this._head;\n    let offset = this._offset + relative;\n    while (offset >= this._chunks[index].length) {",
+      "replacement": "  _byteAt(relative) {\n    let index = this._head;\n    let offset = this._offset + relative;\n    while (offset > this._chunks[index].length) {",
+      "expectCaught": true
+    },
+    {
+      "name": "B-boundary: leave one byte of a consumed Connect frame",
+      "file": "src/connect.js",
+      "anchor": "      this._consume(5 + len);",
+      "replacement": "      this._consume(4 + len);",
+      "expectCaught": true
+    },
+    {
+      "name": "B-order: prepend received chunks instead of appending",
+      "file": "src/connect.js",
+      "anchor": "    this._chunks.push(chunk);",
+      "replacement": "    this._chunks.unshift(chunk);",
+      "expectCaught": true
+    },
+    {
+      "name": "B-copy-order: reverse complete-payload chunk placement",
+      "file": "src/connect.js",
+      "anchor": "      payload.set(chunk.subarray(offset, offset + take), written);",
+      "replacement": "      payload.set(chunk.subarray(offset, offset + take), length - written - take);",
+      "expectCaught": true
+    },
+    {
+      "name": "B-pending: reject exactly 100 MiB instead of only larger pending data",
+      "file": "src/grpc.js",
+      "anchor": "    if (pendingLength > 100 * 1024 * 1024) {",
+      "replacement": "    if (pendingLength >= 100 * 1024 * 1024) {",
+      "expectCaught": true
+    },
+    {
+      "name": "B-grpc-boundary: leave one byte of a consumed gRPC frame",
+      "file": "src/grpc.js",
+      "anchor": "      consumePending(5 + msgLen);",
+      "replacement": "      consumePending(4 + msgLen);",
+      "expectCaught": true
+    },
+    {
+      "name": "B-inflate: remove the decompressed-size ceiling",
+      "file": "src/connect.js",
+      "anchor": "        try { payload = gunzipSync(payload, { maxOutputLength: MAX_FRAME_SIZE }); }",
+      "replacement": "        try { payload = gunzipSync(payload); }",
+      "expectCaught": true
+    }
+  ]
+}

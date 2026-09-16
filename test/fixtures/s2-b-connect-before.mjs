@@ -14,7 +14,6 @@
  */
 
 import { gzipSync, gunzipSync } from 'zlib';
-import { isUint8Array } from 'util/types';
 
 // Hard ceiling on any single frame — both the wire length a frame may advertise
 // and the number of bytes a gzip payload may inflate to. Bounding the DECOMPRESSED
@@ -110,90 +109,27 @@ export function unwrapRequest(body, headers = {}) {
  */
 export class StreamingFrameParser {
   constructor() {
-    this._chunks = [];
-    this._head = 0;
-    this._offset = 0;
-    this._length = 0;
+    this.buffer = Buffer.alloc(0);
   }
 
   push(chunk) {
-    if (!isUint8Array(chunk)) {
-      // Preserve Buffer.concat's invalid-input error without copying valid data.
-      Buffer.concat([Buffer.alloc(0), chunk]);
-    }
-    // Borrow transport chunks until consumed. Empty chunks must not accumulate
-    // queue entries or turn a five-byte header lookup into an unbounded scan.
-    if (chunk.length === 0) return;
-    this._chunks.push(chunk);
-    this._length += chunk.length;
-  }
-
-  _byteAt(relative) {
-    let index = this._head;
-    let offset = this._offset + relative;
-    while (offset >= this._chunks[index].length) {
-      offset -= this._chunks[index++].length;
-    }
-    return this._chunks[index][offset];
-  }
-
-  _copyPayload(length) {
-    const payload = Buffer.alloc(length);
-    if (length === 0) return payload;
-    let index = this._head;
-    let offset = this._offset + 5;
-    while (offset >= this._chunks[index].length) {
-      offset -= this._chunks[index++].length;
-    }
-    let written = 0;
-    while (written < length) {
-      const chunk = this._chunks[index++];
-      const take = Math.min(length - written, chunk.length - offset);
-      payload.set(chunk.subarray(offset, offset + take), written);
-      written += take;
-      offset = 0;
-    }
-    return payload;
-  }
-
-  _consume(length) {
-    this._length -= length;
-    while (length > 0) {
-      const available = this._chunks[this._head].length - this._offset;
-      if (length < available) {
-        this._offset += length;
-        break;
-      }
-      length -= available;
-      this._chunks[this._head++] = null;
-      this._offset = 0;
-    }
-    if (this._head === this._chunks.length) {
-      this._chunks = [];
-      this._head = 0;
-    } else if (this._head * 2 >= this._chunks.length) {
-      // Copy only references, only after at least as many entries were retired.
-      // This bounds retained slots and amortizes compaction across consumed chunks.
-      this._chunks = this._chunks.slice(this._head);
-      this._head = 0;
-    }
+    this.buffer = Buffer.concat([this.buffer, chunk]);
   }
 
   /** Drain all complete frames. Returns [{ flags, isEndStream, payload }]. */
   drain() {
-    // Validate the advertised length before waiting for or allocating its body.
-    // Reading five header bytes never walks the accumulated payload prefix.
+    // Guard against malformed upstream frames that advertise absurd lengths —
+    // without this, Buffer.concat() will happily try to allocate gigabytes.
     const frames = [];
-    while (this._length >= 5) {
-      let len = 0;
-      for (let i = 1; i < 5; i++) len = len * 256 + this._byteAt(i);
+    while (this.buffer.length >= 5) {
+      const len = this.buffer.readUInt32BE(1);
       if (len > MAX_FRAME_SIZE) {
         throw new Error(`HTTP/2 frame size ${len} exceeds ${MAX_FRAME_SIZE}`);
       }
-      if (this._length < 5 + len) break;
+      if (this.buffer.length < 5 + len) break;
 
-      const flags = this._byteAt(0);
-      let payload = this._copyPayload(len);
+      const flags = this.buffer[0];
+      let payload = this.buffer.subarray(5, 5 + len);
       if (flags & 0x01) {
         // Bound the DECOMPRESSED size too: a high-ratio gzip frame that passes the
         // ≤16MB wire-length check above can still inflate to gigabytes. Without
@@ -215,8 +151,7 @@ export class StreamingFrameParser {
         isEndStream: !!(flags & 0x02),
         payload,
       });
-      // A decompression error must leave the failing frame queued, as before.
-      this._consume(5 + len);
+      this.buffer = this.buffer.subarray(5 + len);
     }
     return frames;
   }

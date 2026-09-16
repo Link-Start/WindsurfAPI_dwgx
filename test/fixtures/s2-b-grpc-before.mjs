@@ -301,60 +301,7 @@ export function grpcStream(port, csrfToken, path, body, opts = {}) {
   let settled = false;
   const client = getSession(port);
   let timer;
-  let pendingChunks = [];
-  let pendingHead = 0;
-  let pendingOffset = 0;
-  let pendingLength = 0;
-
-  const pendingByteAt = (relative) => {
-    let index = pendingHead;
-    let offset = pendingOffset + relative;
-    while (offset >= pendingChunks[index].length) {
-      offset -= pendingChunks[index++].length;
-    }
-    return pendingChunks[index][offset];
-  };
-
-  const copyPendingPayload = (length) => {
-    const payload = Buffer.alloc(length);
-    if (length === 0) return payload;
-    let index = pendingHead;
-    let offset = pendingOffset + 5;
-    while (offset >= pendingChunks[index].length) {
-      offset -= pendingChunks[index++].length;
-    }
-    let written = 0;
-    while (written < length) {
-      const chunk = pendingChunks[index++];
-      const take = Math.min(length - written, chunk.length - offset);
-      payload.set(chunk.subarray(offset, offset + take), written);
-      written += take;
-      offset = 0;
-    }
-    return payload;
-  };
-
-  const consumePending = (length) => {
-    pendingLength -= length;
-    while (length > 0) {
-      const available = pendingChunks[pendingHead].length - pendingOffset;
-      if (length < available) {
-        pendingOffset += length;
-        break;
-      }
-      length -= available;
-      pendingChunks[pendingHead++] = null;
-      pendingOffset = 0;
-    }
-    if (pendingHead === pendingChunks.length) {
-      pendingChunks = [];
-      pendingHead = 0;
-    } else if (pendingHead * 2 >= pendingChunks.length) {
-      // Retired entries pay for this reference-only compaction; never shift().
-      pendingChunks = pendingChunks.slice(pendingHead);
-      pendingHead = 0;
-    }
-  };
+  let pendingBuf = Buffer.alloc(0);
 
   timer = setTimeout(() => {
     if (settled) return;
@@ -436,13 +383,8 @@ export function grpcStream(port, csrfToken, path, body, opts = {}) {
       return;
     }
 
-    // Incoming HTTP/2 Buffer chunks are borrowed until consumed. Keep the guard
-    // on aggregate pending bytes BEFORE draining, not on advertised frame size.
-    if (chunk.length) {
-      pendingChunks.push(chunk);
-      pendingLength += chunk.length;
-    }
-    if (pendingLength > 100 * 1024 * 1024) {
+    pendingBuf = Buffer.concat([pendingBuf, chunk]);
+    if (pendingBuf.length > 100 * 1024 * 1024) {
       settled = true;
       clearTimeout(timer);
       try { req.close?.(http2.constants.NGHTTP2_CANCEL); } catch {}
@@ -450,14 +392,13 @@ export function grpcStream(port, csrfToken, path, body, opts = {}) {
       return;
     }
 
-    while (pendingLength >= 5) {
-      const compressed = pendingByteAt(0);
-      let msgLen = 0;
-      for (let i = 1; i < 5; i++) msgLen = msgLen * 256 + pendingByteAt(i);
-      if (pendingLength < 5 + msgLen) break;
+    while (pendingBuf.length >= 5) {
+      const compressed = pendingBuf[0];
+      const msgLen = pendingBuf.readUInt32BE(1);
+      if (pendingBuf.length < 5 + msgLen) break;
 
       if (compressed === 0) {
-        const payload = copyPendingPayload(msgLen);
+        const payload = pendingBuf.subarray(5, 5 + msgLen);
         traceGrpcPayload({
           port,
           path,
@@ -468,7 +409,7 @@ export function grpcStream(port, csrfToken, path, body, opts = {}) {
         });
         onData?.(payload);
       }
-      consumePending(5 + msgLen);
+      pendingBuf = pendingBuf.subarray(5 + msgLen);
     }
   });
 
