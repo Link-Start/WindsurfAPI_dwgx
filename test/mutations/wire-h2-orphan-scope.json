@@ -1,0 +1,43 @@
+{
+  "tests": [
+    "test/wire-h2-orphan-scope.test.js"
+  ],
+  "expectBaselinePass": 4,
+  "mutations": [
+    {
+      "name": "H2-M1: replace whole-history lookup with a running seen set",
+      "file": "src/handlers/tool-emulation.js",
+      "anchor": "  const issued = new Set();\n  for (const m of messages) {\n    if (m?.role === 'assistant' && Array.isArray(m.tool_calls)) {\n      for (const tc of m.tool_calls) {\n        const id = tc?.id;\n        if (id) issued.add(String(id));\n      }\n    }\n  }\n  // Note: an empty `issued` set is NOT a reason to skip — it means EVERY\n  // tool_result present is an orphan (a result with no call anywhere), which is\n  // exactly the malformed shape to drop.\n  let dropped = 0;\n  const out = messages.filter((m) => {\n",
+      "replacement": "  const issued = new Set();\n  let dropped = 0;\n  const out = messages.filter((m) => {\n    if (m?.role === 'assistant' && Array.isArray(m.tool_calls)) {\n      for (const tc of m.tool_calls) {\n        const id = tc?.id;\n        if (id) issued.add(String(id));\n      }\n    }\n",
+      "expectCaught": true
+    },
+    {
+      "name": "H2-M2: keep all results when no calls were found",
+      "file": "src/handlers/tool-emulation.js",
+      "anchor": "  let dropped = 0;\n  const out = messages.filter((m) => {\n    if (m?.role === 'tool') {",
+      "replacement": "  if (issued.size === 0) return messages;\n  let dropped = 0;\n  const out = messages.filter((m) => {\n    if (m?.role === 'tool') {",
+      "expectCaught": true
+    },
+    {
+      "name": "H2-M3: bypass requested orphan stripping",
+      "file": "src/handlers/tool-emulation.js",
+      "anchor": "  if (options.stripOrphans) messages = stripOrphanedToolResults(messages);",
+      "replacement": "  if (false && options.stripOrphans) messages = stripOrphanedToolResults(messages);",
+      "expectCaught": true
+    },
+    {
+      "name": "H2-M4: strip orphans on every normalization entry",
+      "file": "src/handlers/tool-emulation.js",
+      "anchor": "  if (options.stripOrphans) messages = stripOrphanedToolResults(messages);",
+      "replacement": "  messages = stripOrphanedToolResults(messages);",
+      "expectCaught": true
+    },
+    {
+      "name": "H2-M5: mistake pending calls for result orphans",
+      "file": "src/handlers/tool-emulation.js",
+      "anchor": "  let dropped = 0;\n  const out = messages.filter((m) => {\n    if (m?.role === 'tool') {",
+      "replacement": "  let dropped = 0;\n  const out = messages.filter((m) => {\n    if (m?.role === 'assistant' && m.tool_calls?.some((tc) =>\n      !messages.some((r) => r?.role === 'tool' && String(r.tool_call_id) === String(tc.id)))) {\n      dropped++;\n      return false;\n    }\n    if (m?.role === 'tool') {",
+      "expectCaught": true
+    }
+  ]
+}

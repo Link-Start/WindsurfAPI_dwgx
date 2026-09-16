@@ -1104,17 +1104,15 @@ function neutralizeToolResultBody(text) {
   return out;
 }
 
-// Drop orphaned tool_result messages — a role:'tool' whose tool_call_id does not
-// match any assistant tool_call earlier in the conversation. Portable hardening
-// (kiro's remove_orphaned_tool_uses, repo-hank9999): a tool_result with no parent
-// tool_call is a malformed turn a strict upstream can reject (→ UPSTREAM_INTERNAL),
-// and OpenCode/agent loops occasionally emit them (truncated history, retries).
-//
-// CONSERVATIVE by design: we only remove tool_result orphans (an unmistakable
-// error — a result for a call that was never made). We do NOT drop assistant
-// tool_calls that lack a following tool_result: the last turn legitimately has a
-// pending call awaiting execution, so dropping it would break active agent loops.
-// A tool_result whose id matches a real prior call is always kept.
+// Orphanhood here means no matching assistant call anywhere in the supplied
+// history, not no matching call before the result. Using only a seen-so-far set
+// would silently discard a result whose matching call appears later.
+// This filter does not validate chronology, consume ids, reject duplicate
+// results, or distinguish separate calls that reuse an id. A retained result
+// therefore does not prove that the upstream state machine will accept it.
+// Calls without results remain intact because they may still await execution.
+// Keep the filter opt-in: a truncated continuation can omit a legitimate
+// parent call, so applying this policy on every entry path would lose context.
 export function stripOrphanedToolResults(messages) {
   if (!Array.isArray(messages)) return messages;
   // Collect every tool_call id the assistant actually issued.
