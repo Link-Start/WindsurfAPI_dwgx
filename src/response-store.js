@@ -518,7 +518,9 @@ export function putResponse(responseId, messages, callerKey, opts = {}) {
 
   const now = Date.now();
   const existing = _entries.get(responseId);
-  const kept = capEntryBytes(truncateMessages(messages));
+  // Existing limiters are copy-on-write. Clone only the retained graph, so
+  // discarded history is not copied and no stored object aliases the caller.
+  const kept = structuredClone(capEntryBytes(truncateMessages(messages)));
   const bytes = approxBytes(kept);
   const createdAt = existing?.createdAt || now;
   const model = opts.model || existing?.model || null;
@@ -646,7 +648,8 @@ export function getResponse(responseId, callerKey) {
   _stats.hits++;
   return {
     ok: true,
-    messages: entry.messages,
+    // Each reader owns its result, including nested content/tool-call objects.
+    messages: structuredClone(entry.messages),
     model: entry.model,
     createdAt: entry.createdAt,
     status: entry.status,
