@@ -1087,9 +1087,13 @@ export function buildGetChatMessageRequest({ token, messages, model, sessionId, 
       systemPrompt += systemPrompt ? `\n${t}` : t;
       continue;
     }
-    // Empty assistant turns are sent verbatim upstream and measurably provoke repeated
-    // empty completions (kimi client retries failed 10/10 because of this).
-    if (msg.role === 'assistant' && messageText(msg.content).trim() === '' && !msg.tool_calls?.length) {
+    // The Kimi workaround records 10/10 empty retries for empty assistant turns.
+    // Preserve that exclusion unless enabled replay supplies a non-blank payload;
+    // otherwise a disabled probe would reintroduce a text-empty wire frame.
+    // Image-only assistants retain the legacy exclusion: image emission is on
+    // by default, so admitting them needs approval to change default wire.
+    if (msg.role === 'assistant' && messageText(msg.content).trim() === '' && !msg.tool_calls?.length
+      && !(reasoningTagNum && String(msg.reasoning || msg.reasoning_content || '').trim())) {
       continue;
     }
     const source = msg.role === 'assistant' ? SOURCE.ASSISTANT : SOURCE.USER;
