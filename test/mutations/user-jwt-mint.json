@@ -19,7 +19,7 @@
     {
       "name": "a JWT with no readable exp gets cached anyway — a credential we cannot age out is presented until the process restarts, so a rotated or revoked token keeps being sent",
       "file": "src/devin-connect.js",
-      "anchor": "      if (expMs) _userJwtCache.set(key, { jwt, expMs, epoch });",
+      "anchor": "      if (expMs && expMs - USER_JWT_REFRESH_SKEW_MS > cacheNow) {\n        _userJwtCache.set(key, { jwt, expMs, epoch });\n        pruneUserJwtCache(cacheNow);\n      }",
       "replacement": "      _userJwtCache.set(key, { jwt, expMs: expMs || (Date.now() + 86400000), epoch });"
     },
     {

@@ -628,6 +628,16 @@ export function isUserJwtEnabled(env = process.env) {
 
 /** Seconds of headroom before `exp` at which a cached JWT is considered stale. */
 const USER_JWT_REFRESH_SKEW_MS = 60_000;
+const USER_JWT_CACHE_MAX = 500;
+
+function pruneUserJwtCache(now) {
+  for (const [key, entry] of _userJwtCache) {
+    if (entry.expMs - USER_JWT_REFRESH_SKEW_MS <= now) _userJwtCache.delete(key);
+  }
+  while (_userJwtCache.size > USER_JWT_CACHE_MAX) {
+    _userJwtCache.delete(_userJwtCache.keys().next().value);
+  }
+}
 
 /**
  * `exp` (ms) out of a JWT payload, or null when it carries none.
@@ -669,8 +679,13 @@ export async function mintUserJwt(sessionToken, opts = {}) {
   const now = Number.isFinite(opts.now) ? opts.now : Date.now();
   const key = `${sessionToken} ${host}`;
 
+  pruneUserJwtCache(now);
   const hit = _userJwtCache.get(key);
-  if (hit && hit.expMs - USER_JWT_REFRESH_SKEW_MS > now) return hit.jwt;
+  if (hit && hit.expMs - USER_JWT_REFRESH_SKEW_MS > now) {
+    _userJwtCache.delete(key);
+    _userJwtCache.set(key, hit);
+    return hit.jwt;
+  }
 
   // Coalesce: a burst of concurrent requests on a cold cache must mint once.
   const pending = _userJwtInflight.get(key);
@@ -691,17 +706,24 @@ export async function mintUserJwt(sessionToken, opts = {}) {
       if (epoch !== _userJwtEpoch) return null; // account changed under us
       const expMs = userJwtExpiryMs(jwt);
       // No readable exp → usable once, never cached. See userJwtExpiryMs.
-      if (expMs) _userJwtCache.set(key, { jwt, expMs, epoch });
+      const cacheNow = Number.isFinite(opts.now) ? opts.now : Date.now();
+      if (expMs && expMs - USER_JWT_REFRESH_SKEW_MS > cacheNow) {
+        _userJwtCache.set(key, { jwt, expMs, epoch });
+        pruneUserJwtCache(cacheNow);
+      }
       return jwt;
     } catch (e) {
       log.debug(`GetUserJwt mint failed (degrading to the no-JWT wire): ${e.message}`);
       return null;
-    } finally {
-      _userJwtInflight.delete(key);
     }
   })();
-  _userJwtInflight.set(key, task);
-  return task;
+  // An old-epoch mint must not delete a newer epoch's pending task. Attach
+  // cleanup after creation so synchronous encoding failures are cleaned too.
+  const pendingTask = task.finally(() => {
+    if (_userJwtInflight.get(key) === pendingTask) _userJwtInflight.delete(key);
+  });
+  _userJwtInflight.set(key, pendingTask);
+  return pendingTask;
 }
 
 /**

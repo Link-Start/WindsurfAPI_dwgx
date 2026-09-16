@@ -1,0 +1,50 @@
+{
+  "tests": [
+    "test/s4-r8.test.js"
+  ],
+  "mutations": [
+    {
+      "name": "JWT cache has no size ceiling",
+      "file": "src/devin-connect.js",
+      "anchor": "  while (_userJwtCache.size > USER_JWT_CACHE_MAX) {",
+      "replacement": "  while (false && _userJwtCache.size > USER_JWT_CACHE_MAX) {",
+      "expectCaught": true
+    },
+    {
+      "name": "Unrelated cache accesses do not reap expired entries",
+      "file": "src/devin-connect.js",
+      "anchor": "    if (entry.expMs - USER_JWT_REFRESH_SKEW_MS <= now) _userJwtCache.delete(key);",
+      "replacement": "    // Mutant: never sweep expired entries.",
+      "expectCaught": true
+    },
+    {
+      "name": "A cache hit does not update LRU position",
+      "file": "src/devin-connect.js",
+      "anchor": "    _userJwtCache.delete(key);\n    _userJwtCache.set(key, hit);",
+      "replacement": "    // Mutant: preserve insertion order on a hit.",
+      "expectCaught": true
+    },
+    {
+      "name": "Old-epoch completion deletes the new pending mint",
+      "file": "src/devin-connect.js",
+      "anchor": "    if (_userJwtInflight.get(key) === pendingTask) _userJwtInflight.delete(key);",
+      "replacement": "    _userJwtInflight.delete(key);",
+      "expectCaught": true
+    },
+    {
+      "name": "Exact skew boundary is incorrectly retained",
+      "file": "src/devin-connect.js",
+      "anchor": "    if (entry.expMs - USER_JWT_REFRESH_SKEW_MS <= now) _userJwtCache.delete(key);",
+      "replacement": "    if (entry.expMs - USER_JWT_REFRESH_SKEW_MS < now) _userJwtCache.delete(key);",
+      "expectCaught": true
+    },
+    {
+      "name": "Migrated existing no-expiry mutation still violates the cache contract",
+      "file": "src/devin-connect.js",
+      "anchor": "      if (expMs && expMs - USER_JWT_REFRESH_SKEW_MS > cacheNow) {\n        _userJwtCache.set(key, { jwt, expMs, epoch });\n        pruneUserJwtCache(cacheNow);\n      }",
+      "replacement": "      _userJwtCache.set(key, { jwt, expMs: expMs || (Date.now() + 86400000), epoch });",
+      "expectCaught": true
+    }
+  ],
+  "expectBaselinePass": 6
+}
