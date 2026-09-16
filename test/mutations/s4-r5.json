@@ -1,0 +1,30 @@
+{
+  "tests": [
+    "test/s4-r5.test.js",
+    "test/s4-r5.ladder.test.js"
+  ],
+  "mutations": [
+    {
+      "name": "Failover delay drops to zero",
+      "file": "src/handlers/chat.js",
+      "anchor": "    const timer = setTimeout(finish, 500);",
+      "replacement": "    const timer = setTimeout(finish, 0);",
+      "expectCaught": true
+    },
+    {
+      "name": "Abort after the wait no longer prevents reservation",
+      "file": "src/handlers/chat.js",
+      "anchor": "  });\n  if (signal?.aborted) return null;\n  return getApiKey(triedKeys, null, callerKey, selector);",
+      "replacement": "  });\n  return getApiKey(triedKeys, null, callerKey, selector);",
+      "expectCaught": true
+    },
+    {
+      "name": "Default hop budget is raised from two to three",
+      "file": "src/handlers/chat.js",
+      "anchor": "function connectFailoverMax(env = process.env) {\n  const raw = Number(env.DEVIN_CONNECT_FAILOVER_MAX);\n  return Number.isFinite(raw) && raw >= 0 ? raw : 2;\n}",
+      "replacement": "function connectFailoverMax(env = process.env) {\n  const raw = Number(env.DEVIN_CONNECT_FAILOVER_MAX);\n  return Number.isFinite(raw) && raw >= 0 ? raw : 3;\n}",
+      "expectCaught": true
+    }
+  ],
+  "expectBaselinePass": 8
+}

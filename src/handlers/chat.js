@@ -2248,8 +2248,21 @@ async function acquireConnectAccount(signal, callerKey, selector = null) {
 // Unlike the initial acquire this does NOT block on the queue: a dead account
 // never re-enters the pool as "untried", so waiting on the queue deadline would
 // just stall the request for QUEUE_MAX_WAIT_MS before failing. We take whatever
-// untried account is selectable right now, or give up immediately.
-function acquireConnectFailover(triedKeys, signal, callerKey, selector = null) {
+// untried account is selectable after a bounded failover pause, or give up.
+// This helper is never called for the initial, successful acquisition.
+async function acquireConnectFailover(triedKeys, signal, callerKey, selector = null) {
+  if (signal?.aborted) return null;
+  // Match Cascade's 500ms first backoff, but keep a fixed per-hop budget.
+  // Wait before acquisition so an idle timer never holds an account reservation.
+  await new Promise(resolve => {
+    const timer = setTimeout(finish, 500);
+    function finish() {
+      clearTimeout(timer);
+      signal?.removeEventListener('abort', finish);
+      resolve();
+    }
+    signal?.addEventListener('abort', finish, { once: true });
+  });
   if (signal?.aborted) return null;
   return getApiKey(triedKeys, null, callerKey, selector);
 }
@@ -6687,15 +6700,46 @@ function streamResponse(id, created, model, modelKey, provider, messages, cascad
         }
 
         // All attempts failed
-        log.error('Stream error after retries:', lastErr?.message || String(lastErr || 'account queue timed out without an error object'));
-        recordRequest(model, false, Date.now() - startTime, currentApiKey);
-        try {
+        function failureStage(stage, action) {
+          try {
+            return action();
+          } catch (error) {
+            // Never emit arbitrary error text: it may carry headers or tokens.
+            // Stage + error class + digest is enough to correlate the failure.
+            let line = `[stream-failure] stage=${stage}`;
+            try {
+              const name = ['Error', 'TypeError', 'ReferenceError', 'RangeError', 'SyntaxError']
+                .includes(error?.name) ? error.name : 'UnknownError';
+              line += ` kind=${name} ${safeKeyRef(error?.message || '', 'error')}`;
+            } catch {
+              // A throwing getter/formatter must not disable the fixed stage log.
+            }
+            try {
+              log.warn(line);
+            } catch {
+              // The primary sink failed; do not let diagnostics block termination.
+              try { process.stderr.write(`${line} logger=failed\n`); }
+              catch { /* Both local sinks failed; there is no remaining safe sink. */ }
+            }
+            return undefined;
+          }
+        }
+        failureStage('upstream-log', () => {
+          // Maintainer note: the pre-existing #77 guard pins this exact fallback shape, and a
+          // digest-only line turns a null lastErr into a constant that an operator cannot act
+          // on. Redacting upstream text is SEC-6's job, on the message itself.
+          log.error('Stream error after retries:', lastErr?.message || String(lastErr || 'account queue timed out without an error object'));
+        });
+        failureStage('request-stats', () => {
+          recordRequest(model, false, Date.now() - startTime, currentApiKey);
+        });
+        const failure = failureStage('classify', () => {
           const temporaryUnavailable = isAllTemporarilyUnavailable(modelKey);
           const rl = isAllRateLimited(modelKey);
           const allInternal = streamInternalCount > 0 && tried.length > 0 && streamInternalCount >= tried.length;
           const poolExhausted = isLsPoolExhausted(lastErr);
           const deadlineExceeded = isUpstreamDeadlineExceeded(lastErr) || lastErr?.type === 'upstream_deadline_exceeded';
-          // 优先暴露 upstream_transient，避免把 Cascade transport 抖动误报成账号限流。
+          // Prefer upstream_transient over an account-limit diagnosis for transport failures.
           const lastIsTransport = isCascadeTransportError(lastErr);
           const errMsg = allInternal
             ? upstreamTransientErrorMessage(model, tried.length, lastIsTransport ? 'cascade_transport' : 'internal_error')
@@ -6708,9 +6752,16 @@ function streamResponse(id, created, model, modelKey, provider, messages, cascad
             : rl.allLimited
             ? `${model} 所有账号均已达速率限制，请 ${Math.ceil(rl.retryAfterMs / 1000)} 秒后重试`
             : sanitizeText(lastErr?.message || 'no accounts');
-          if (allInternal) {
-            log.error(`Chat[${reqId}] stream: ${tried.length}/${tried.length} accounts hit upstream transient error — surfacing upstream_transient_error`);
-          }
+          return { temporaryUnavailable, allInternal, poolExhausted, deadlineExceeded, errMsg };
+        }) || {
+          temporaryUnavailable: { allUnavailable: false }, allInternal: false,
+          poolExhausted: false, deadlineExceeded: false, errMsg: 'Stream failed',
+        };
+        const { temporaryUnavailable, allInternal, poolExhausted, deadlineExceeded, errMsg } = failure;
+        failureStage('classification-log', () => {
+          if (allInternal) log.error('Chat stream: all attempts hit an upstream transient error');
+        });
+        failureStage('pool-restore', () => {
           if (!hadSuccess && !reuseEntryDead && checkedOutReuseEntry && fpBefore) {
             poolCheckin(fpBefore, checkedOutReuseEntry, callerKey, ttlHintFromCachePolicy(cachePolicy));
             log.info(`Chat[${reqId}]: restored checked-out cascade after failed stream`);
@@ -6718,6 +6769,8 @@ function streamResponse(id, created, model, modelKey, provider, messages, cascad
             log.info(`Chat[${reqId}]: stream reuse entry was invalidated (cascade not_found upstream); not restoring to pool`);
           }
 
+        });
+        failureStage('egress-tail', () => {
           // #185 failure tail: a candidate object may still be wholly buffered
           // because no terminal chunk arrived to prove it was the exact metadata
           // envelope. On an incomplete stream we must fail open and release those
@@ -6729,6 +6782,8 @@ function streamResponse(id, created, model, modelKey, provider, messages, cascad
           });
           if (egressTail) emitContent(egressTail);
 
+        });
+        failureStage('think-tail', () => {
           // #250 failure path: release whatever the think classifier still holds
           // so an undecided/unterminated span is delivered as text rather than
           // dropped (visible beats dropped — same policy as the success tail).
@@ -6745,6 +6800,8 @@ function streamResponse(id, created, model, modelKey, provider, messages, cascad
             if (rerouteTail) emitContent(rerouteTail);
           }
 
+        });
+        failureStage('thinking-buffer', () => {
           // #250 failure path, part 2 (adversarial review 2026-08-10): a CLOSED
           // think span that was already rerouted did NOT sit in the classifier —
           // it sat in accThinking (emulateTools buffers there to keep the Anthropic
@@ -6773,32 +6830,26 @@ function streamResponse(id, created, model, modelKey, provider, messages, cascad
             }
           }
 
-          if (emittedClientPayload) {
-            // We already streamed real assistant content. Injecting
-            // "[Error: ...]" as a content delta here would corrupt the
-            // assistant message (clients display it verbatim as model
-            // output). Close cleanly with a plain stop — the caller saw
-            // whatever partial content we produced. Error details only
-            // go to the server log.
-            //
-            // Dedup failure path: emit the held tail unconditionally
-            // (release(), not settle() — nothing is suppressed here), so a
-            // client that does not render the reasoning channel still gets
-            // the duplicate tail instead of silence.
-            //
-            // This used to call an undefined `chunk(...)` helper (introduced by
-            // 26b939bc): a ReferenceError swallowed by the enclosing try/catch,
-            // which also skipped finishPartialStreamAfterError below — so the
-            // client lost the held tail AND the synthetic stop. Use the same
-            // literal frame shape as every sibling send() in this function.
+        });
+        if (emittedClientPayload) {
+          failureStage('dedup-tail', () => {
             const heldTail = reasoningDedup?.release() ?? '';
             if (heldTail) {
               send({ id, object: 'chat.completion.chunk', created, model,
                 choices: [{ index: 0, delta: { content: heldTail }, finish_reason: null }] });
             }
-            finishPartialStreamAfterError({ id, created, model, send, res, internalRoute: !isOpenAIClient });
-            log.warn(`Stream: partial response delivered then failed (${errMsg})`);
-          } else {
+          });
+          // Keep the existing synthetic-finish contract on internal routes.
+          // Suppress its local DONE write; the independent stage below owns it.
+          failureStage('finish-frame', () => {
+            finishPartialStreamAfterError({ id, created, model, send, res: null,
+              internalRoute: !isOpenAIClient });
+          });
+          failureStage('partial-log', () => {
+            log.warn(`Stream: partial response delivered then failed (${safeKeyRef(errMsg, 'error')})`);
+          });
+        } else {
+          failureStage('error-frame', () => {
             const errType = allInternal
               ? 'upstream_transient_error'
               : deadlineExceeded
@@ -6809,10 +6860,14 @@ function streamResponse(id, created, model, modelKey, provider, messages, cascad
                 ? 'rate_limit_exceeded'
                 : 'upstream_error';
             send(chatStreamError(errMsg, errType, deadlineExceeded ? 'windsurf_provider_deadline' : null));
-          }
-          if (!emittedClientPayload) res.write('data: [DONE]\n\n');
-        } catch {}
-        if (!res.writableEnded) res.end();
+          });
+        }
+        failureStage('done', () => {
+          if (!res.writableEnded) res.write('data: [DONE]\n\n');
+        });
+        failureStage('end', () => {
+          if (!res.writableEnded) res.end();
+        });
       } finally {
         unregisterSse();
         stopHeartbeat();

@@ -1,0 +1,43 @@
+{
+  "tests": [
+    "test/s4-r4.test.js"
+  ],
+  "mutations": [
+    {
+      "name": "Independent DONE stage is disabled",
+      "file": "src/handlers/chat.js",
+      "anchor": "        failureStage('done', () => {\n          if (!res.writableEnded) res.write('data: [DONE]\\n\\n');\n        });",
+      "replacement": "        failureStage('done', () => {\n          // Mutant: omit terminal sentinel.\n        });",
+      "expectCaught": true
+    },
+    {
+      "name": "Failure diagnostics are silently discarded",
+      "file": "src/handlers/chat.js",
+      "anchor": "              log.warn(line);",
+      "replacement": "              // Mutant: discard the failure diagnostic.",
+      "expectCaught": true
+    },
+    {
+      "name": "Logger fallback is disabled",
+      "file": "src/handlers/chat.js",
+      "anchor": "              try { process.stderr.write(`${line} logger=failed\\n`); }",
+      "replacement": "              try { /* Mutant: no fallback sink. */ }",
+      "expectCaught": true
+    },
+    {
+      "name": "Raw error text leaks through diagnostic",
+      "file": "src/handlers/chat.js",
+      "anchor": "              line += ` kind=${name} ${safeKeyRef(error?.message || '', 'error')}`;",
+      "replacement": "              line += ` kind=${name} ${error?.message || ''}`;",
+      "expectCaught": true
+    },
+    {
+      "name": "Synthetic finish also writes DONE and duplicates the terminal marker",
+      "file": "src/handlers/chat.js",
+      "anchor": "            finishPartialStreamAfterError({ id, created, model, send, res: null,",
+      "replacement": "            finishPartialStreamAfterError({ id, created, model, send, res,",
+      "expectCaught": true
+    }
+  ],
+  "expectBaselinePass": 8
+}
