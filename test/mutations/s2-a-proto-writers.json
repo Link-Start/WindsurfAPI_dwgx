@@ -1,0 +1,51 @@
+{
+  "tests": [
+    "test/s2-a-fields.test.js",
+    "test/s2-a-requests.test.js"
+  ],
+  "expectBaselinePass": 27,
+  "mutations": [
+    {
+      "name": "A-length: advertise one extra UTF-8 byte",
+      "file": "src/proto.js",
+      "anchor": "      offset = writeVarint32(out, offset, length);\n      out.write(str, offset, length, 'utf-8');",
+      "replacement": "      offset = writeVarint32(out, offset, length + 1);\n      out.write(str, offset, length, 'utf-8');",
+      "expectCaught": true
+    },
+    {
+      "name": "A-order: put the varint value before its tag",
+      "file": "src/proto.js",
+      "anchor": "    const offset = writeVarint32(out, 0, tag);\n    writeVarint32(out, offset, value);",
+      "replacement": "    const offset = writeVarint32(out, 0, value);\n    writeVarint32(out, offset, tag);",
+      "expectCaught": true
+    },
+    {
+      "name": "A-varint: drop continuation bits",
+      "file": "src/proto.js",
+      "anchor": "    buf[offset++] = value ? byte | 0x80 : byte;",
+      "replacement": "    buf[offset++] = byte;",
+      "expectCaught": true
+    },
+    {
+      "name": "A-empty: emit an empty embedded message",
+      "file": "src/proto.js",
+      "anchor": "  if (!msgBuf || msgBuf.length === 0) return Buffer.alloc(0);",
+      "replacement": "  if (!msgBuf) return Buffer.alloc(0);",
+      "expectCaught": true
+    },
+    {
+      "name": "A-empty-string: omit an explicitly empty string",
+      "file": "src/proto.js",
+      "anchor": "  if (!str && str !== '') return Buffer.alloc(0);",
+      "replacement": "  if (!str) return Buffer.alloc(0);",
+      "expectCaught": true
+    },
+    {
+      "name": "A-tag: reinterpret signed-overflow tags in the fast path",
+      "file": "src/proto.js",
+      "anchor": "  return Number.isInteger(field) && field >= 0 && field <= 0x0FFFFFFF;",
+      "replacement": "  return Number.isInteger(field) && field >= 0 && field <= 0x1FFFFFFF;",
+      "expectCaught": true
+    }
+  ]
+}

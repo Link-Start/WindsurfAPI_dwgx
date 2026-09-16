@@ -70,57 +70,14 @@ function makeTag(field, wireType) {
   return encodeVarint((field << 3) | wireType);
 }
 
-// The old tag expression is signed int32. Tags with bit 31 set intentionally
-// stay on the old BigInt path; treating them as uint32 would change their bytes.
-function isSmallField(field) {
-  return Number.isInteger(field) && field >= 0 && field <= 0x0FFFFFFF;
-}
-
-function varintLength32(value) {
-  let length = 1;
-  while (value > 0x7F) { value >>>= 7; length++; }
-  return length;
-}
-
-function writeVarint32(buf, offset, value) {
-  do {
-    const byte = value & 0x7F;
-    value >>>= 7;
-    buf[offset++] = value ? byte | 0x80 : byte;
-  } while (value);
-  return offset;
-}
-
 /** Write a varint field (wire type 0). */
 export function writeVarintField(field, value) {
-  // Restrict the fast path to primitive integers. The fallback preserves the
-  // old coercion order, negative uint64 encoding, and unusual numeric inputs.
-  if (isSmallField(field) && Number.isInteger(value) && value >= 0 && value <= 0x7FFFFFFF) {
-    const tag = (field << 3) | 0;
-    const out = Buffer.alloc(varintLength32(tag) + varintLength32(value));
-    const offset = writeVarint32(out, 0, tag);
-    writeVarint32(out, offset, value);
-    return out;
-  }
   return Buffer.concat([makeTag(field, 0), encodeVarint(value)]);
 }
 
 /** Write a length-delimited string field (wire type 2). */
 export function writeStringField(field, str) {
   if (!str && str !== '') return Buffer.alloc(0);
-  // Strings are immutable: measuring UTF-8 does not re-evaluate user coercions.
-  // Buffer-like and coercible inputs retain Buffer.from's original semantics.
-  if (typeof str === 'string' && isSmallField(field)) {
-    const length = Buffer.byteLength(str, 'utf-8');
-    if (length <= 0x7FFFFFFF) {
-      const tag = (field << 3) | 2;
-      const out = Buffer.alloc(varintLength32(tag) + varintLength32(length) + length);
-      let offset = writeVarint32(out, 0, tag);
-      offset = writeVarint32(out, offset, length);
-      out.write(str, offset, length, 'utf-8');
-      return out;
-    }
-  }
   const data = Buffer.from(str, 'utf-8');
   return Buffer.concat([makeTag(field, 2), encodeVarint(data.length), data]);
 }
@@ -134,15 +91,6 @@ export function writeBytesField(field, data) {
 /** Write an embedded message field (wire type 2). */
 export function writeMessageField(field, msgBuf) {
   if (!msgBuf || msgBuf.length === 0) return Buffer.alloc(0);
-  if (Buffer.isBuffer(msgBuf) && isSmallField(field) && msgBuf.length <= 0x7FFFFFFF) {
-    const length = msgBuf.length;
-    const tag = (field << 3) | 2;
-    const out = Buffer.alloc(varintLength32(tag) + varintLength32(length) + length);
-    let offset = writeVarint32(out, 0, tag);
-    offset = writeVarint32(out, offset, length);
-    out.set(msgBuf, offset);
-    return out;
-  }
   return Buffer.concat([makeTag(field, 2), encodeVarint(msgBuf.length), msgBuf]);
 }
 
