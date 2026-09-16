@@ -15,29 +15,24 @@
 // *looking* authoritative. These assertions are deliberately structural — they check claims a
 // script can settle, and leave prose judgement to review.
 //
-// This file enters the gate automatically: `scripts/run-test-shard.mjs` globs `test/*.test.js`
-// with readdirSync, so no registration step exists to forget.
+// Both npm test and test:release use recursive discovery from scripts/run-test-shard.mjs.
+// test/test-shard-script.test.js pins the inventory so nested files cannot silently disappear.
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync, readdirSync, existsSync } from 'node:fs';
 import { join, dirname, resolve, relative } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { execFileSync } from 'node:child_process';
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const DOCS = join(ROOT, 'docs');
 
 function mdFiles() {
-  const out = [];
-  const walk = (dir) => {
-    for (const name of readdirSync(dir, { withFileTypes: true })) {
-      if (name.name === '.git' || name.name === 'node_modules') continue;
-      const p = join(dir, name.name);
-      if (name.isDirectory()) walk(p);
-      else if (name.name.endsWith('.md')) out.push(p);
-    }
-  };
-  walk(ROOT);
-  return out;
+  const files = execFileSync('git', ['ls-files', '-z', '--', '*.md'], {
+    cwd: ROOT, encoding: 'utf8', maxBuffer: 16 * 1024 * 1024,
+  }).split('\0').filter(Boolean);
+  assert.ok(files.length > 0, 'markdown inventory must contain tracked files');
+  return [...new Set(files)].sort().map(file => resolve(ROOT, file));
 }
 
 const read = (p) => readFileSync(p, 'utf8');

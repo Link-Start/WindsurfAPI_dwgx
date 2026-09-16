@@ -132,12 +132,12 @@ function isIgnored(file) {
 }
 
 function trackedFiles() {
-  const output = execFileSync('git', ['ls-files', '-z'], {
+  const output = execFileSync('git', ['ls-files', '-co', '--exclude-standard', '-z'], {
     cwd: root,
     encoding: 'utf8',
     maxBuffer: 16 * 1024 * 1024,
   });
-  return output.split('\0').filter(Boolean);
+  return [...new Set(output.split('\0').filter(Boolean))];
 }
 
 function inputFiles() {
