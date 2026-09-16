@@ -1,11 +1,14 @@
-import { describe, it } from 'node:test';
+import { after, describe, it } from 'node:test';
 import assert from 'node:assert/strict';
 import { writeFile } from 'node:fs/promises';
-import { dirname, join } from 'node:path';
-import { fileURLToPath } from 'node:url';
+import { join } from 'node:path';
+import { mkdtempSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
 import { handleResponses } from '../../src/handlers/responses.js';
 
-const __dirname = dirname(fileURLToPath(import.meta.url));
+// Captures contain fresh response IDs; the automated test must not dirty tracked fixtures.
+const CAPTURE_DIR = mkdtempSync(join(tmpdir(), 'wa-response-sequences-'));
+after(() => rmSync(CAPTURE_DIR, { recursive: true, force: true }));
 
 function chatChunk(chunk) {
   return `data: ${JSON.stringify(chunk)}\n\n`;
@@ -83,6 +86,10 @@ function parseCapturedSse(chunks) {
     .split('\n\n')
     .filter(Boolean)
     .filter(frame => !frame.startsWith(':'))
+    // The stream ends with a bare `data: [DONE]` sentinel, which is not JSON; it is a
+    // terminator, not an event, so it must not reach the parser. (This file never ran
+    // before recursive test discovery existed, so the bug was invisible.)
+    .filter(frame => (frame.split('\n').find(line => line.startsWith('data: ')) || '').slice(6).trim() !== '[DONE]')
     .map(frame => {
       const lines = frame.split('\n');
       const event = lines.find(line => line.startsWith('event: '))?.slice(7);
@@ -144,7 +151,7 @@ async function captureSequence(cached, filename) {
   await result.handler(realRes);
 
   const sequence = parseCapturedSse(realRes.chunks);
-  await writeFile(join(__dirname, filename), `${JSON.stringify(sequence, null, 2)}\n`, 'utf8');
+  await writeFile(join(CAPTURE_DIR, filename), `${JSON.stringify(sequence, null, 2)}\n`, 'utf8');
 
   assert.equal(sequence[0]?.type, 'response.created');
   assert.match(sequence[0]?.summary.response?.id || '', /^resp_[a-f0-9]{24}$/);

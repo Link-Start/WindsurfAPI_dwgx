@@ -177,14 +177,98 @@ silent, a hang is named by the shard runner.
 specs (`test/mutations/*.json`), so if you edit a line one of them anchors on, the anchor
 silently stops matching — invisibly to both you and CI. This really happened on PR #241: the
 contributor's suite was green, the maintainer's re-run was green, and the post-merge gate was
-green, and all three missed two broken anchors. If you touched `src/`, run:
+green, and all three missed two broken anchors.
 
-```bash
-for s in test/mutations/*.json; do npm run mutate -- "$s"; done
+**Incremental gate (native Windows PowerShell or POSIX):**
+
+```text
+npm run gate
 ```
 
-It holds the working tree exclusively (every step writes, tests, then restores), so don't edit
-anything while it runs. In your PR description, also include:
+It runs spec-static-check, secret-scan, the unchanged test:release command, and whitespace
+checks for both unstaged and staged changes. Every step prints PASS/FAIL and its exit code;
+the release result includes explicit skips. Mutations print SKIP because they are not part
+of this incremental command. Exit 0 is incremental success, 1 a failed check, 2 missing or
+untrustworthy evidence. PR CI deliberately does not run mutations because of their cost.
+
+**Full gate on Linux/POSIX** (Node, npm, Git and Bash installed; clean committed checkout):
+
+```bash
+set -eu
+[ -z "$(git status --porcelain)" ] || { echo 'Commit changes before mutation validation'; exit 2; }
+npm ci
+npm run gate
+set -- test/mutations/*.json
+[ -f "$1" ] || { echo 'No mutation specs'; exit 2; }
+expected=$#; completed=0; failed=0
+for spec do
+  code=0
+  npm run mutate -- "$spec" || code=$?
+  printf 'VERDICT %s exit=%s\n' "$spec" "$code"
+  completed=$((completed + 1))
+  if [ "$code" -ne 0 ]; then failed=1; fi
+done
+[ "$completed" -eq "$expected" ] || exit 2
+printf 'VERDICT coverage: %s/%s\n' "$completed" "$expected"
+[ "$failed" -eq 0 ]
+```
+
+**Full gate from Windows PowerShell:** run the incremental command natively, then run the
+POSIX fixtures in a clean WSL Linux clone of the **same committed HEAD**. Do not add Git for
+Windows paths to the trusted POSIX fixture candidates. WSL must already have Node, npm,
+Git and Bash; this command does not install or silently substitute them. Native skips are
+not mutation evidence. Keep both logs when reviewing a Windows-originated change.
+
+```powershell
+$ErrorActionPreference = 'Stop'
+npm run gate
+if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+if (git status --porcelain) { throw 'Commit changes before mutation validation' }
+$owner = (git rev-parse --show-toplevel).Trim()
+if ($LASTEXITCODE -ne 0) { throw 'Not a Git checkout' }
+$commit = (git rev-parse HEAD).Trim()
+$linuxOwner = (wsl -- wslpath -a -- $owner).Trim()
+if ($LASTEXITCODE -ne 0) { throw 'WSL path conversion failed' }
+$script = @'
+set -eu
+owner=$1; commit=$2
+scratch=$(mktemp -d)
+trap 'rm -rf "$scratch"' EXIT
+# --no-local transfers Git objects rather than hard-linking across filesystems.
+git -c core.autocrlf=false clone --no-local --quiet -- "$owner" "$scratch/repo"
+cd "$scratch/repo"
+git checkout --quiet --detach "$commit"
+[ "$(git rev-parse HEAD)" = "$commit" ] || exit 2
+npm ci
+npm run gate
+set -- test/mutations/*.json
+[ -f "$1" ] || { echo 'No mutation specs'; exit 2; }
+expected=$#; completed=0; failed=0
+for spec do
+  code=0
+  npm run mutate -- "$spec" || code=$?
+  printf 'VERDICT %s exit=%s\n' "$spec" "$code"
+  completed=$((completed + 1))
+  if [ "$code" -ne 0 ]; then failed=1; fi
+done
+[ "$completed" -eq "$expected" ] || exit 2
+printf 'VERDICT coverage: %s/%s\n' "$completed" "$expected"
+[ "$failed" -eq 0 ]
+'@
+$localScript = [IO.Path]::GetTempFileName()
+try {
+  [IO.File]::WriteAllText($localScript, ($script -replace "`r", ''), [Text.UTF8Encoding]::new($false))
+  $linuxScript = (wsl -- wslpath -a -- $localScript).Trim()
+  if ($LASTEXITCODE -ne 0) { throw 'WSL script path conversion failed' }
+  wsl -- bash $linuxScript $linuxOwner $commit
+  if ($LASTEXITCODE -ne 0) { throw "Linux full gate failed: exit=$LASTEXITCODE" }
+} finally {
+  Remove-Item -LiteralPath $localScript -Force
+}
+```
+
+The mutation step holds its checkout exclusively (write, test, restore). Do not edit that
+checkout while it runs. In your PR description, also include:
 
 - What curl commands or smoke scenarios you ran
 - Which dashboard panels you clicked through
