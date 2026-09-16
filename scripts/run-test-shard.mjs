@@ -68,7 +68,8 @@ export function selectShard(files, shardIndex, shardTotal) {
 
 export function parseFileSummary(output) {
   const counts = {};
-  for (const match of output.replace(/\x1b\[[0-9;]*m/g, '').matchAll(
+  const stripped = output.replace(/\x1b\[[0-9;]*m/g, '');
+  for (const match of stripped.matchAll(
     /^(?:#|ℹ) (tests|pass|fail|skipped|cancelled|todo) (\d+)\r?$/gm,
   )) {
     if (Object.hasOwn(counts, match[1])) throw new Error(`Duplicate summary: ${match[1]}`);
@@ -77,7 +78,14 @@ export function parseFileSummary(output) {
   for (const field of ['tests', 'pass', 'fail', 'skipped', 'cancelled', 'todo']) {
     if (!Number.isSafeInteger(counts[field])) throw new Error(`Missing summary: ${field}`);
   }
-  if (counts.tests === 0 || counts.tests !== counts.pass + counts.fail + counts.skipped + counts.cancelled + counts.todo) {
+  if (counts.tests !== counts.pass + counts.fail + counts.skipped + counts.cancelled + counts.todo) {
+    throw new Error('Incomplete test summary');
+  }
+  // A file whose whole suite is skipped at the describe level reports zero tests —
+  // node emits the suite with its skip reason and no test entries at all. That is a
+  // measured skip, not a truncated run, so it needs the suite line as its witness:
+  // `tests 0` with no suite at all is still an incomplete summary.
+  if (counts.tests === 0 && !/(?:^|\n)(?:#|\u2139) suites [1-9]/.test(stripped)) {
     throw new Error('Incomplete test summary');
   }
   return counts;
