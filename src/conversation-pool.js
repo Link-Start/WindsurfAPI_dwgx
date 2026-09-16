@@ -496,7 +496,14 @@ function effectiveTtl(entry) {
   return Number.isFinite(hint) && hint > 0 ? hint : POOL_TTL_MS;
 }
 
-function prune(now) {
+function tenantOf(callerKey) {
+  const i = callerKey.indexOf(':');
+  if (i < 0) return callerKey;
+  const j = callerKey.indexOf(':', i + 1);
+  return j < 0 ? callerKey : callerKey.slice(0, j);
+}
+
+function prune(now, admittingTenant = null) {
   for (const [fp, e] of _pool) {
     if (now - e.lastAccess > effectiveTtl(e)) { _pool.delete(fp); stats.expired++; }
   }
@@ -505,10 +512,32 @@ function prune(now) {
     return;
   }
   const entries = [..._pool.entries()].sort((a, b) => a[1].lastAccess - b[1].lastAccess);
-  const toDrop = entries.length - POOL_MAX;
-  for (let i = 0; i < toDrop; i++) {
-    _pool.delete(entries[i][0]);
+  // Recount only under pressure; checkout, aliases and generation invalidation
+  // need no additional lifetime bookkeeping and cannot leak tenant counters.
+  const counts = new Map();
+  for (const [, e] of entries) {
+    const tenant = tenantOf(e.callerKey || '');
+    counts.set(tenant, (counts.get(tenant) || 0) + 1);
+  }
+  const fairShare = Math.max(1, Math.floor(POOL_MAX / counts.size));
+  for (const [fp, e] of entries) {
+    if (_pool.size <= POOL_MAX) break;
+    const tenant = tenantOf(e.callerKey || '');
+    if (counts.get(tenant) <= fairShare) continue;
+    _pool.delete(fp);
+    counts.set(tenant, counts.get(tenant) - 1);
     stats.evictions++;
+  }
+  // More tenants than slots cannot each retain a slot. Reject the admitting
+  // tenant's entries instead of evicting another tenant's last live entry.
+  // With T <= POOL_MAX the over-share pass above always makes enough room.
+  if (_pool.size > POOL_MAX && admittingTenant !== null) {
+    for (const [fp, e] of entries) {
+      if (_pool.size <= POOL_MAX) break;
+      if (tenantOf(e.callerKey || '') !== admittingTenant || !_pool.has(fp)) continue;
+      _pool.delete(fp);
+      stats.evictions++;
+    }
   }
   _pruneCallerIndex();
 }
@@ -687,7 +716,7 @@ export function checkin(fingerprint, entry, callerKey = '', ttlHintMs) {
       _callerLatest.set(`${ck}\0${mk}`, fingerprints[0]);
     }
   }
-  prune(now);
+  prune(now, tenantOf(callerKey || entry.callerKey || ''));
 }
 
 /**

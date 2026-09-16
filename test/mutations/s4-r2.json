@@ -1,0 +1,29 @@
+{
+  "tests": [
+    "test/s4-r2.test.js"
+  ],
+  "mutations": [
+    {
+      "name": "Over-share guard is bypassed",
+      "file": "src/conversation-pool.js",
+      "anchor": "    if (counts.get(tenant) <= fairShare) continue;",
+      "replacement": "    // Mutant: global LRU can evict any tenant.",
+      "expectCaught": true
+    },
+    {
+      "name": "New-tenant rejection is disabled",
+      "file": "src/conversation-pool.js",
+      "anchor": "  if (_pool.size > POOL_MAX && admittingTenant !== null) {",
+      "replacement": "  if (false && _pool.size > POOL_MAX && admittingTenant !== null) {",
+      "expectCaught": true
+    },
+    {
+      "name": "Subusers incorrectly become separate tenants",
+      "file": "src/conversation-pool.js",
+      "anchor": "  return j < 0 ? callerKey : callerKey.slice(0, j);",
+      "replacement": "  return callerKey;",
+      "expectCaught": true
+    }
+  ],
+  "expectBaselinePass": 6
+}
