@@ -297,10 +297,15 @@ export function exportStats() {
 // maps merged, recentRequests concatenated + de-duped by ts+model then capped.
 export function importStats(snap, { mode = 'merge' } = {}) {
   if (!snap || typeof snap !== 'object') return { ok: false, error: 'invalid snapshot' };
-  const src = snap._schema ? snap : snap; // tolerate raw state too
+  // Match runtime-config.js:182-190: ignore prototype keys at every depth.
+  // Complete the clone before clearing state so a failed clone is non-mutating.
+  const src = JSON.parse(JSON.stringify(snap), (key, value) => {
+    if (key === '__proto__' || key === 'constructor' || key === 'prototype') return undefined;
+    return value;
+  });
   if (mode === 'replace') {
     for (const k of Object.keys(_state)) delete _state[k];
-    Object.assign(_state, JSON.parse(JSON.stringify(src)));
+    Object.assign(_state, src);
     delete _state._exportedAt; delete _state._schema;
     _curBucket = null; // S8: state wholesale-replaced, cached bucket ref is stale
     scheduleSave();
