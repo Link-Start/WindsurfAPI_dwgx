@@ -137,6 +137,21 @@ export function sanitizeText(s) {
  * literal (either as a partial prefix or as an unterminated path tail) is
  * held internally until the next feed or the flush.
  */
+// Index by UTF-16 prefix length, exactly matching slice(0, length).
+// The bounded table is built once, rather than allocating each trial per delta.
+function streamLiteralPrefixes(literal) {
+  const prefixes = new Array(literal.length);
+  for (let length = 1; length < literal.length; length++) {
+    prefixes[length] = literal.slice(0, length);
+  }
+  return prefixes;
+}
+
+const PATH_STREAM_PREFIXES = new Map([
+  ...SENSITIVE_LITERALS,
+  ...STRIP_BLOCK_TAGS.map(tag => `<${tag}`),
+].map(literal => [literal, streamLiteralPrefixes(literal)]));
+
 export class PathSanitizeStream {
   constructor() {
     this.buffer = '';
@@ -247,9 +262,10 @@ export class PathSanitizeStream {
 
     // (2) partial-prefix tail
     for (const lit of SENSITIVE_LITERALS) {
+      const prefixes = PATH_STREAM_PREFIXES.get(lit);
       const maxLen = Math.min(lit.length - 1, len);
       for (let plen = maxLen; plen > 0; plen--) {
-        if (buf.endsWith(lit.slice(0, plen))) {
+        if (buf.endsWith(prefixes[plen])) {
           const start = len - plen;
           if (start < cut) cut = start;
           break;
@@ -280,9 +296,10 @@ export class PathSanitizeStream {
         searchFrom = closeIdx + close.length;
       }
       // Partial-prefix tail of the open tag (`<workspace_inform`).
+      const prefixes = PATH_STREAM_PREFIXES.get(open);
       const openMax = Math.min(open.length - 1, len);
       for (let plen = openMax; plen > 0; plen--) {
-        if (buf.endsWith(open.slice(0, plen))) {
+        if (buf.endsWith(prefixes[plen])) {
           const start = len - plen;
           if (start < cut) cut = start;
           break;

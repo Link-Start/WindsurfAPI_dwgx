@@ -1,0 +1,36 @@
+{
+  "tests": [
+    "test/s1-p4-prefix-tables.test.js"
+  ],
+  "expectBaselinePass": 3,
+  "mutations": [
+    {
+      "name": "P4 mutation 1",
+      "file": "src/sanitize.js",
+      "anchor": "      const maxLen = Math.min(lit.length - 1, len);\n      for (let plen = maxLen; plen > 0; plen--) {\n        if (buf.endsWith(prefixes[plen])) {",
+      "replacement": "      const maxLen = Math.min(lit.length - 1, len);\n      for (let plen = maxLen; plen > 0; plen--) {\n        if (buf.endsWith(lit.slice(0, plen))) {",
+      "expectCaught": true
+    },
+    {
+      "name": "P4 mutation 2",
+      "file": "src/sanitize.js",
+      "anchor": "      const openMax = Math.min(open.length - 1, len);\n      for (let plen = openMax; plen > 0; plen--) {\n        if (buf.endsWith(prefixes[plen])) {",
+      "replacement": "      const openMax = Math.min(open.length - 1, len);\n      for (let plen = openMax; plen > 0; plen--) {\n        if (false && buf.endsWith(prefixes[plen])) {",
+      "expectCaught": true
+    },
+    {
+      "name": "P4 mutation 3",
+      "file": "src/handlers/tool-emulation.js",
+      "anchor": "          const max = Math.min(s.length - 1, this.buffer.length);\n          for (let len = max; len > 0; len--) {\n            if (this.buffer.endsWith(prefixes[len])) {",
+      "replacement": "          const max = Math.min(s.length - 1, this.buffer.length);\n          for (let len = max; len > 0; len--) {\n            if (this.buffer.endsWith(s.slice(0, len))) {",
+      "expectCaught": true
+    },
+    {
+      "name": "P4 mutation 4",
+      "file": "src/handlers/tool-emulation.js",
+      "anchor": "          const maxHold = Math.min(prefix.length - 1, this.buffer.length);\n          for (let len = maxHold; len > 0; len--) {\n            if (this.buffer.endsWith(prefixes[len])) {",
+      "replacement": "          const maxHold = Math.min(prefix.length - 1, this.buffer.length);\n          for (let len = maxHold; len > 0; len--) {\n            if (false && this.buffer.endsWith(prefixes[len])) {",
+      "expectCaught": true
+    }
+  ]
+}

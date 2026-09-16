@@ -1671,6 +1671,23 @@ function parseNonOpenAIDialectBuffer(dialect, body, startSeen) {
   return { text: body, toolCalls: [] };
 }
 
+// Index by UTF-16 prefix length, exactly matching slice(0, length).
+// The bounded table is built once, rather than allocating each trial per delta.
+function toolStreamLiteralPrefixes(literal) {
+  const prefixes = new Array(literal.length);
+  for (let length = 1; length < literal.length; length++) {
+    prefixes[length] = literal.slice(0, length);
+  }
+  return prefixes;
+}
+
+const TOOL_STREAM_PREFIXES = new Map([
+  GLM47_TOOL_OPEN, KIMI_TOOL_SECTION_BEGIN,
+  '{"function_call"', '{"tool_calls"', '{"tool_call"', '{"function"', '{"name"',
+  '{ "function_call"', '{ "tool_calls"', '{ "name"',
+  '<tool_result', '{"tool_code"',
+].map(literal => [literal, toolStreamLiteralPrefixes(literal)]));
+
 export class ToolCallStreamParser {
   /** 超限 tool_call 后为 true：吞掉残余直到闭合标记，防裸泄漏 */
   _oversizeDropped = false;
@@ -1805,9 +1822,10 @@ export class ToolCallStreamParser {
       if (earliest === -1) {
         let holdLen = 0;
         for (const s of sentinels) {
+          const prefixes = TOOL_STREAM_PREFIXES.get(s);
           const max = Math.min(s.length - 1, this.buffer.length);
           for (let len = max; len > 0; len--) {
-            if (this.buffer.endsWith(s.slice(0, len))) {
+            if (this.buffer.endsWith(prefixes[len])) {
               holdLen = Math.max(holdLen, len);
               break;
             }
@@ -1982,9 +2000,10 @@ export class ToolCallStreamParser {
         if (this.parseToolCode) holdPrefixes.push(TC_CODE);
         if (this.parseBareJson) holdPrefixes.push(TC_BARE);
         for (const prefix of holdPrefixes) {
+          const prefixes = TOOL_STREAM_PREFIXES.get(prefix);
           const maxHold = Math.min(prefix.length - 1, this.buffer.length);
           for (let len = maxHold; len > 0; len--) {
-            if (this.buffer.endsWith(prefix.slice(0, len))) {
+            if (this.buffer.endsWith(prefixes[len])) {
               holdLen = Math.max(holdLen, len);
               break;
             }
