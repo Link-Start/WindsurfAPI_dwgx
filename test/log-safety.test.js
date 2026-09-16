@@ -55,6 +55,7 @@ describe('log safety helpers', () => {
       'src/auth.js',
       'src/handlers/chat.js',
       'src/dashboard/windsurf-login.js',
+      'src/dashboard/api.js',
       'src/windsurf-api.js',
     ];
 
@@ -63,7 +64,7 @@ describe('log safety helpers', () => {
       const src = readFileSync(file, 'utf8');
       for (const [idx, line] of src.split(/\r?\n/).entries()) {
         if (!/\blog\.(?:info|warn|error|debug)\b/.test(line)) continue;
-        if (/\$\{(?:acct|account)\.email\}|\$\{email\}|(?:apiKey|reg\.api_key|currentApiKey)\??\.slice\(/.test(line)) {
+        if (/\$\{\s*(?:(?:acct|account)\.email|email)\b[^}]*\}|(?:apiKey|reg\.api_key|currentApiKey)\??\.slice\(/.test(line)) {
           offenders.push(`${file}:${idx + 1}: ${line.trim()}`);
         }
       }

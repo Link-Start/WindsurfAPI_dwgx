@@ -420,7 +420,7 @@ export function extractOAuthToken(input) {
 // dead session can auto-relogin. Storing a user's password is privacy-sensitive,
 // so on a PUBLIC bind it requires BOTH an operator opt-in env AND a per-request
 // opt-in (the dashboard checkbox). The "local" fast-path requires the request to
-// ALSO come from a loopback peer — not just a loopback BIND host. Behind a
+// ALSO come from a trusted loopback client — not just a loopback BIND host. Behind a
 // reverse proxy (openresty → app on 127.0.0.1) isLocalBindHost() is always true,
 // so checking bind alone would let any authenticated REMOTE user silently
 // persist their plaintext password, defeating the DEVIN_CONNECT_ALLOW_REMOTE_CRED_STORE
@@ -428,7 +428,8 @@ export function extractOAuthToken(input) {
 // unless DEVIN_CONNECT_CRED_KEY is set.
 function credStoreGateOpen(wantStore, req) {
   if (wantStore !== true) return false;
-  const remote = req?.socket?.remoteAddress || req?.connection?.remoteAddress || '';
+  // Consistency with v2.0.55 AUTH-1 and checkAuth: the proxy is not the client.
+  const remote = dashboardClientIp(req);
   if (isLocalBindHost() && isLoopbackAddress(remote)) return true;
   return process.env.DEVIN_CONNECT_ALLOW_REMOTE_CRED_STORE === '1';
 }
@@ -1442,7 +1443,7 @@ export async function handleDashboardApi(method, subpath, body, req, res) {
   // public binds *before* the user clicks it. Returns the same gates the
   // import endpoint enforces, plus a friendly explanation.
   if (subpath === '/accounts/import-local-availability' && method === 'GET') {
-    const remote = req?.socket?.remoteAddress || '';
+    const remote = dashboardClientIp(req);
     const localBind = isLocalBindHost();
     const loopback = isLoopbackAddress(remote);
     let available = true;
@@ -1468,15 +1469,15 @@ export async function handleDashboardApi(method, subpath, body, req, res) {
   }
 
   // GET /accounts/import-local — discover Windsurf desktop client credentials
-  // Local-only hardening: must be bound to loopback host and remote socket
-  // must also be loopback, so reverse proxies on public binds cannot
+  // Local-only hardening: both the bind and trusted client must be loopback.
+  // Use the same client identity as checkAuth, so same-host proxies cannot
   // expose local desktop credentials.
   if (subpath === '/accounts/import-local' && method === 'GET') {
     if (!isLocalBindHost()) {
       log.warn('local-windsurf import refused: dashboard not bound to loopback host');
       return json(res, 403, { error: 'ERR_LOCAL_IMPORT_NOT_AVAILABLE_PUBLIC_BIND' });
     }
-    const remote = req?.socket?.remoteAddress;
+    const remote = dashboardClientIp(req);
     if (!isLoopbackAddress(remote)) {
       log.warn(`local-windsurf import refused: non-loopback caller ${remote}`);
       return json(res, 403, { error: 'ERR_LOCAL_IMPORT_LOOPBACK_ONLY', message: 'Local Windsurf import only available from 127.0.0.1' });
@@ -2665,7 +2666,7 @@ export async function handleDashboardApi(method, subpath, body, req, res) {
       log.warn(`reveal-key REFUSED for account ${revealKey[1]} from ${dashboardClientIp(req) || 'unknown'}: missing/invalid re-auth confirmation`);
       return json(res, 401, { error: 'ERR_REVEAL_REAUTH_REQUIRED', message: 'Re-enter the dashboard password to reveal this key.' });
     }
-    log.info(`reveal-key: account ${revealKey[1]} (${acct.email || 'no-email'}) revealed from ${dashboardClientIp(req) || 'unknown'}`);
+    log.info(`reveal-key: account ${revealKey[1]} (${maskEmail(acct.email) || 'no-email'}) revealed from ${dashboardClientIp(req) || 'unknown'}`);
     return json(res, 200, { success: true, apiKey: acct.apiKey });
   }
 
