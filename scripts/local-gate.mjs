@@ -11,18 +11,26 @@ export function releaseEvidence(output) {
   const files = [...text.matchAll(/^- (test\/[^\n]+\.test\.js)$/gm)].map(m => m[1]);
   if (files.length !== expected || new Set(files).size !== expected) throw new Error('release file plan mismatch');
   const rows = new Map();
-  for (const m of text.matchAll(/^((?:\[[^\]]+\]\s+)+)(?:#|ℹ) (tests|pass|fail|skipped|cancelled|todo) (\d+)$/gm)) {
+  // A file whose whole suite is skipped at the describe level reports zero tests
+  // with a `suites N` line as its only witness. The runner accepts that shape
+  // (see parseFileSummary); the gate must accept exactly the same shape or the
+  // gate can never pass on a suite that contains such a file.
+  const suiteRows = new Map();
+  for (const m of text.matchAll(/^((?:\[[^\]]+\]\s+)+)(?:#|ℹ) (tests|pass|fail|skipped|cancelled|todo|suites) (\d+)$/gm)) {
     const names = [...m[1].matchAll(/\[([^\]]+)\]/g)].map(x => x[1].replace(/\\/g, '/'));
     const file = names[0];
     if (!names.every(name => name === file) || !files.includes(file)) throw new Error('unexpected release file');
+    if (m[2] === 'suites') { suiteRows.set(file, Number(m[3])); continue; }
     const row = rows.get(file) || {};
     if (Object.hasOwn(row, m[2])) throw new Error('duplicate release summary');
     row[m[2]] = Number(m[3]); rows.set(file, row);
   }
   if (rows.size !== expected) throw new Error(`release parsed ${rows.size}/${expected} files`);
   const totals = { tests: 0, pass: 0, fail: 0, skipped: 0, cancelled: 0, todo: 0 };
-  for (const row of rows.values()) {
-    if (!Object.keys(totals).every(k => Number.isSafeInteger(row[k])) || row.tests === 0
+  for (const [file, row] of rows) {
+    const zeroWithSuite = row.tests === 0 && Number.isSafeInteger(suiteRows.get(file)) && suiteRows.get(file) > 0;
+    if (!Object.keys(totals).every(k => Number.isSafeInteger(row[k]))
+        || (row.tests === 0 && !zeroWithSuite)
         || row.tests !== row.pass + row.fail + row.skipped + row.cancelled + row.todo) {
       throw new Error('incomplete release summary');
     }
