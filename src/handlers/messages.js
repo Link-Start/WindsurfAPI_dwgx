@@ -273,11 +273,19 @@ export function extractCallerSubKey(body) {
 // Per-tool token estimate for the cache-prefix walk — mirrors the tool
 // accounting handleCountTokens uses (name + description + serialized schema)
 // so the cached-prefix estimate and the count_tokens estimate stay consistent.
-function cacheToolTokens(t) {
-  if (!t || typeof t !== 'object') return 0;
-  let n = estimateTextTokens(t.name || '') + estimateTextTokens(t.description || '');
-  if (t.input_schema) n += estimateTextTokens(JSON.stringify(t.input_schema));
-  return n;
+function cacheToolTokens(t, promptParts = null) {
+  if ((!t || typeof t !== 'object') && !promptParts) return 0;
+  const nameAndDescription = estimateTextTokens(t?.name || '') + estimateTextTokens(t?.description || '');
+  let n = nameAndDescription;
+  // Keep the count_tokens addition order: name+description, then schema,
+  // after system and messages. The prefix walk has a different order.
+  if (promptParts) promptParts.push(nameAndDescription);
+  if (t?.input_schema) {
+    const schemaTokens = estimateTextTokens(JSON.stringify(t.input_schema));
+    n += schemaTokens;
+    if (promptParts) promptParts.push(schemaTokens);
+  }
+  return t && typeof t === 'object' ? n : 0;
 }
 
 // C2: Anthropic does not write a cache entry (and bills no cache_creation)
@@ -297,7 +305,25 @@ function minCacheablePrefixTokens(model) {
 // CJK-aware estimate of the cached prefix size (see below), split per-TTL into
 // est5mTokens/est1hTokens (C6), used only when the upstream reports no cache
 // tokens. estCacheCreationTokens == est5mTokens + est1hTokens.
-function extractCachePolicy(body) {
+// Prefix accounting reads every system block's text; count_tokens instead
+// dispatches on the block type. Reuse text only where both definitions agree.
+function systemBlockPromptTokens(block, textTokens) {
+  if (!block || typeof block !== 'object') return 0;
+  switch (block.type) {
+    case 'text':
+      return textTokens;
+    case 'tool_use':
+    case 'tool_result':
+    case 'thinking':
+    case 'document':
+    case 'image':
+      return anthropicBlockTokens(block);
+    default:
+      return typeof block.text === 'string' ? textTokens : 0;
+  }
+}
+
+function extractCachePolicy(body, promptEstimate = null) {
   let breakpointCount = 0;
   let has1h = false;
   // Anthropic prompt caching is PREFIX-CUMULATIVE: a cache_control breakpoint
@@ -346,19 +372,48 @@ function extractCachePolicy(body) {
       delete block.cache_control;
     }
   };
-  if (Array.isArray(body.tools)) for (const t of body.tools) visit(t, cacheToolTokens(t));
+  // Request-local numeric intermediates avoid retaining another prompt or
+  // serializing tool schemas twice. Nothing is added to the forwarded body.
+  const toolPromptParts = promptEstimate ? [] : null;
+  let promptTokens = 0;
+  if (Array.isArray(body.tools)) {
+    for (const t of body.tools) visit(t, cacheToolTokens(t, toolPromptParts));
+  }
   if (typeof body.system === 'string') {
-    // A string system prompt carries no marker but is still part of any
-    // cached prefix a later breakpoint forms.
-    runningTokens += estimateTextTokens(body.system);
+    const tokens = estimateTextTokens(body.system);
+    runningTokens += tokens;
+    promptTokens += tokens;
   } else if (Array.isArray(body.system)) {
-    for (const s of body.system) visit(s, estimateTextTokens(s?.text || ''));
+    for (const s of body.system) {
+      const tokens = estimateTextTokens(s?.text || '');
+      visit(s, tokens);
+      if (promptEstimate) promptTokens += systemBlockPromptTokens(s, tokens);
+    }
+  } else if (promptEstimate) {
+    promptTokens += anthropicContentTokens(body.system);
   }
   if (Array.isArray(body.messages)) {
     for (const m of body.messages) {
-      if (Array.isArray(m.content)) for (const c of m.content) visit(c, anthropicBlockTokens(c));
-      else if (typeof m.content === 'string') runningTokens += estimateTextTokens(m.content);
+      let messageTokens = 0;
+      if (Array.isArray(m.content)) {
+        for (const c of m.content) {
+          const tokens = anthropicBlockTokens(c);
+          visit(c, tokens);
+          messageTokens += tokens;
+        }
+      } else if (typeof m.content === 'string') {
+        messageTokens = estimateTextTokens(m.content);
+        runningTokens += messageTokens;
+      } else if (promptEstimate) {
+        messageTokens = anthropicContentTokens(m.content);
+      }
+      // Preserve the original per-message sum before adding it to the total.
+      promptTokens += messageTokens;
     }
+  }
+  if (promptEstimate) {
+    for (const tokens of toolPromptParts) promptTokens += tokens;
+    promptEstimate.tokens = promptTokens;
   }
   // C5: a top-level `cache_control` is NOT part of the official Anthropic
   // Messages schema (breakpoints live on tools[]/system[]/content[] blocks).
@@ -556,8 +611,8 @@ function flattenContentBlocks(blocks) {
 export { neutralizeClientIdentity } from './identity-neutralize.js';
 import { neutralizeClientIdentity } from './identity-neutralize.js';
 
-function anthropicToOpenAI(body, ccActive = false) {
-  const cachePolicy = extractCachePolicy(body);
+function anthropicToOpenAI(body, ccActive = false, promptEstimate = null) {
+  const cachePolicy = extractCachePolicy(body, promptEstimate);
   const mapAnthropicToolChoice = (toolChoice) => {
     if (!toolChoice || typeof toolChoice !== 'object') return toolChoice;
     if (toolChoice.type === 'auto') return 'auto';
@@ -1570,7 +1625,8 @@ export async function handleMessages(body, context = {}) {
   // ONLY the opt-in aggressive identity block inside neutralizeClientIdentity;
   // false → byte-identical to the pre-cc translation for every other client.
   const ccActive = !!context.ccCompat?.active;
-  const openaiBody = anthropicToOpenAI(body, ccActive);
+  const promptEstimate = { tokens: 0 };
+  const openaiBody = anthropicToOpenAI(body, ccActive, promptEstimate);
   // anthropicToOpenAI attaches __cachePolicy only when the request carried
   // cache_control breakpoints; reuse it for the local cache-token estimate.
   const cachePolicy = openaiBody.__cachePolicy || null;
@@ -1579,7 +1635,9 @@ export async function handleMessages(body, context = {}) {
   // message_start.usage so official SDKs read a non-zero input_tokens there
   // instead of the old all-zero placeholder. (cache_control deletion inside
   // anthropicToOpenAI does not affect this count.)
-  const inputEstimate = estimateRequestPromptTokens(body);
+  // The prefix walk already computed the count_tokens total over the
+  // original content. Reuse that number instead of revisiting every string.
+  const inputEstimate = promptEstimate.tokens;
   const chatHandler = context.handleChatCompletions || handleChatCompletions;
   // Augment callerKey with the per-user tag from metadata.user_id when
   // present so the cascade pool can isolate concurrent Claude Code users
@@ -1710,15 +1768,29 @@ function isCjkCodePoint(cp) {
 
 function estimateTextTokens(str) {
   if (!str) return 0;
+  const text = String(str);
   let cjk = 0;
   let other = 0;
-  // Iterating with for…of yields whole code points (surrogate pairs included),
-  // so astral-plane CJK (Extension B+) is classified correctly.
-  for (const ch of String(str)) {
-    if (isCjkCodePoint(ch.codePointAt(0))) cjk += 1;
+  for (let i = 0; i < text.length; i++) {
+    let cp = text.charCodeAt(i);
+    // All weighted ranges start at U+1100. ASCII and lower code points
+    // need neither surrogate decoding nor the CJK interval comparisons.
+    if (cp < 0x1100) {
+      other += 1;
+      continue;
+    }
+    if (cp >= 0xD800 && cp <= 0xDBFF && i + 1 < text.length) {
+      const low = text.charCodeAt(i + 1);
+      if (low >= 0xDC00 && low <= 0xDFFF) {
+        cp = 0x10000 + (cp - 0xD800) * 0x400 + low - 0xDC00;
+        i += 1;
+      }
+    }
+    // Consume only valid pairs together. Lone surrogates remain one
+    // non-CJK code point, exactly as the string iterator treated them.
+    if (isCjkCodePoint(cp)) cjk += 1;
     else other += 1;
   }
-  // CJK ≈ 1 token/char (conservative upper bound); the rest ≈ chars/4.
   return cjk + Math.ceil(other / 4);
 }
 

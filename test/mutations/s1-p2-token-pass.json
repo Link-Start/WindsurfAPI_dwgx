@@ -1,0 +1,43 @@
+{
+  "tests": [
+    "test/s1-p2-token-pass.test.js"
+  ],
+  "expectBaselinePass": 4,
+  "mutations": [
+    {
+      "name": "P2 mutation 1",
+      "file": "src/handlers/messages.js",
+      "anchor": "    if (cp < 0x1100) {",
+      "replacement": "    if (cp <= 0x1100) {",
+      "expectCaught": true
+    },
+    {
+      "name": "P2 mutation 2",
+      "file": "src/handlers/messages.js",
+      "anchor": "        i += 1;\n      }\n    }\n    // Consume only valid pairs together.",
+      "replacement": "        i += 0;\n      }\n    }\n    // Consume only valid pairs together.",
+      "expectCaught": true
+    },
+    {
+      "name": "P2 mutation 3",
+      "file": "src/handlers/messages.js",
+      "anchor": "    promptEstimate.tokens = promptTokens;",
+      "replacement": "    promptEstimate.tokens = runningTokens;",
+      "expectCaught": true
+    },
+    {
+      "name": "P2 mutation 4",
+      "file": "src/handlers/messages.js",
+      "anchor": "  const inputEstimate = promptEstimate.tokens;",
+      "replacement": "  const inputEstimate = estimateRequestPromptTokens(body);",
+      "expectCaught": true
+    },
+    {
+      "name": "P2 mutation 5",
+      "file": "src/handlers/messages.js",
+      "anchor": "function estimateTextTokens(str) {\n  if (!str) return 0;\n  const text = String(str);\n  let cjk = 0;\n  let other = 0;\n  for (let i = 0; i < text.length; i++) {\n    let cp = text.charCodeAt(i);\n    // All weighted ranges start at U+1100. ASCII and lower code points\n    // need neither surrogate decoding nor the CJK interval comparisons.\n    if (cp < 0x1100) {\n      other += 1;\n      continue;\n    }\n    if (cp >= 0xD800 && cp <= 0xDBFF && i + 1 < text.length) {\n      const low = text.charCodeAt(i + 1);\n      if (low >= 0xDC00 && low <= 0xDFFF) {\n        cp = 0x10000 + (cp - 0xD800) * 0x400 + low - 0xDC00;\n        i += 1;\n      }\n    }\n    // Consume only valid pairs together. Lone surrogates remain one\n    // non-CJK code point, exactly as the string iterator treated them.\n    if (isCjkCodePoint(cp)) cjk += 1;\n    else other += 1;\n  }\n  return cjk + Math.ceil(other / 4);\n}\n",
+      "replacement": "function estimateTextTokens(str) {\n  if (!str) return 0;\n  let cjk = 0;\n  let other = 0;\n  // Iterating with for…of yields whole code points (surrogate pairs included),\n  // so astral-plane CJK (Extension B+) is classified correctly.\n  for (const ch of String(str)) {\n    if (isCjkCodePoint(ch.codePointAt(0))) cjk += 1;\n    else other += 1;\n  }\n  // CJK ≈ 1 token/char (conservative upper bound); the rest ≈ chars/4.\n  return cjk + Math.ceil(other / 4);\n}\n",
+      "expectCaught": true
+    }
+  ]
+}
