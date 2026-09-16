@@ -24,9 +24,9 @@
  *   { "v": 1, "records": { "<email-lower>": { salt, iv, tag, ct } } }   (all hex)
  */
 
-import { readFileSync, writeFileSync, existsSync, renameSync } from 'fs';
-import { join } from 'path';
-import { createCipheriv, createDecipheriv, scryptSync, randomBytes } from 'crypto';
+import { readFileSync, writeFileSync, renameSync, mkdirSync, rmdirSync, openSync, closeSync, unlinkSync, realpathSync } from 'fs';
+import { join, dirname, basename, resolve } from 'path';
+import { createCipheriv, createDecipheriv, scryptSync, randomBytes, randomUUID } from 'crypto';
 import { config, log } from './config.js';
 import { bumpConnect, __registerCredHealth } from './devin-connect-metrics.js';
 
@@ -112,7 +112,7 @@ function tryRepairJson(text) {
 // fragments and rebuild the records map one entry at a time, keeping only those
 // that pass shape validation. One mangled record is dropped; the rest survive.
 function salvageRecordsByRegex(text) {
-  const records = {};
+  const records = Object.create(null);
   // Match an email-ish key followed by an object literal containing the four
   // hex fields in any order. Non-greedy object body, capped to avoid runaway.
   const entryRe = /"([^"\n]+?)"\s*:\s*\{([^{}]{0,4000}?)\}/g;
@@ -133,60 +133,169 @@ function salvageRecordsByRegex(text) {
   return records;
 }
 
-// Read the credential store with three resilience tiers so a single corrupt
-// byte can't silently wipe the whole fleet's relogin credentials:
-//   1. JSON.parse (normal path)
-//   2. JSON repair (BOM / trailing comma / tail-truncation) then parse
-//   3. per-record regex salvage from the raw text
-// Any tier beyond (1) bumps cred_store_repaired + logs, and re-persists the
-// recovered store once (self-heal) so the next read is clean again.
-function readStore(env = process.env) {
-  if (!existsSync(credFilePath(env))) return { v: FILE_VERSION, records: {} };
+// Synchronous callers already run to completion on one event loop. This guard
+// also rejects reentrant calls; returning success for queued work would break
+// the existing boolean/throw API and lose persistence errors at its callers.
+const _saveInFlight = new Set();
+
+function credentialStoreError(code) {
+  const error = new Error(code);
+  error.code = code;
+  return error;
+}
+
+function canonicalCredFile(env) {
+  const file = resolve(credFilePath(env));
+  return join(realpathSync(dirname(file)), basename(file));
+}
+
+function withStoreLock(env, operation) {
+  const file = canonicalCredFile(env);
+  if (_saveInFlight.has(file)) throw credentialStoreError('ERR_CRED_STORE_BUSY');
+  const lock = `${file}.lock`;
+  let held = false;
+  _saveInFlight.add(file);
+  try {
+    try {
+      // Non-recursive mkdir is the cross-process claim. Never steal by age:
+      // a paused writer can still resume and publish its old snapshot.
+      mkdirSync(lock, { mode: 0o700 });
+      held = true;
+    } catch (error) {
+      if (error.code === 'EEXIST') throw credentialStoreError('ERR_CRED_STORE_BUSY');
+      throw error;
+    }
+    return operation({ ...env, DEVIN_CONNECT_CRED_FILE: file });
+  } finally {
+    if (held) {
+      try {
+        rmdirSync(lock);
+      } catch (error) {
+        // A completed rename remains committed. The surviving lock fences
+        // later writes until an operator resolves the cleanup failure.
+        log.error(`credential store lock release failed (${error.code || 'UNKNOWN'}); writes remain fenced`);
+      }
+    }
+    _saveInFlight.delete(file);
+  }
+}
+
+function copyRecordMap(records) {
+  return Object.assign(Object.create(null), records || {});
+}
+
+function isStoreShape(value) {
+  return value && typeof value === 'object' && !Array.isArray(value)
+    && value.records && typeof value.records === 'object' && !Array.isArray(value.records);
+}
+
+function readSnapshot(env) {
   let raw;
   try {
-    raw = readFileSync(credFilePath(env), 'utf8');
-  } catch (e) {
-    log.warn(`credential store unreadable (${e.message}); treating as empty`);
-    return { v: FILE_VERSION, records: {} };
+    raw = readFileSync(credFilePath(env));
+  } catch (error) {
+    if (error.code !== 'ENOENT') throw error;
+    return { store: { v: FILE_VERSION, records: copyRecordMap() }, raw: null, corrupt: false };
   }
-
-  // Tier 1 — clean parse.
+  const text = raw.toString('utf8');
   try {
-    const parsed = JSON.parse(raw);
-    if (parsed && typeof parsed === 'object' && typeof parsed.records === 'object') {
-      return { v: parsed.v || FILE_VERSION, records: parsed.records || {} };
+    const parsed = JSON.parse(text);
+    if (isStoreShape(parsed)) {
+      return { store: { v: parsed.v || FILE_VERSION, records: copyRecordMap(parsed.records) }, raw, corrupt: false };
     }
-    // Parsed but wrong shape — fall through to salvage from the raw text.
-  } catch { /* fall through to repair */ }
+  } catch { /* Inspect both recovery tiers without modifying the source. */ }
 
-  // Tier 2 — repair the JSON wrapper.
-  const repaired = tryRepairJson(raw);
-  if (repaired) {
-    const recovered = { v: repaired.v || FILE_VERSION, records: repaired.records || {} };
-    const n = Object.keys(recovered.records).length;
-    log.error(`credential store JSON was corrupt; repaired wrapper and recovered ${n} record(s). Re-persisting clean copy.`);
-    bumpCredRepaired();
-    try { writeStore(recovered, env); } catch (e) { log.warn(`credential store self-heal write failed: ${e.message}`); }
-    return recovered;
-  }
+  const repaired = tryRepairJson(text);
+  const salvaged = salvageRecordsByRegex(text);
+  // Tier 2 can recover only a prefix. Always include intact tier-3 records
+  // outside that prefix instead of publishing the smaller successful tier.
+  const records = copyRecordMap(salvaged);
+  if (isStoreShape(repaired)) Object.assign(records, repaired.records);
+  return { store: { v: repaired?.v || FILE_VERSION, records }, raw, corrupt: true };
+}
 
-  // Tier 3 — per-record regex salvage.
-  const salvaged = salvageRecordsByRegex(raw);
-  const n = Object.keys(salvaged).length;
-  const recovered = { v: FILE_VERSION, records: salvaged };
-  log.error(`credential store JSON unrepairable; regex-salvaged ${n} intact record(s) from the raw file. Re-persisting clean copy.`);
-  bumpCredRepaired();
-  if (n > 0) {
-    try { writeStore(recovered, env); } catch (e) { log.warn(`credential store self-heal write failed: ${e.message}`); }
+function assertRecordSetPreserved(before, after, removed = []) {
+  const allowedRemovals = new Set(removed);
+  for (const key of Object.keys(before)) {
+    if (!allowedRemovals.has(key) && !Object.hasOwn(after, key)) {
+      throw credentialStoreError('ERR_CRED_STORE_RECORD_LOSS');
+    }
   }
-  return recovered;
+}
+
+function preserveCorruptSource(snapshot, env) {
+  if (!snapshot.corrupt || snapshot.raw === null) return;
+  const backup = `${credFilePath(env)}.corrupt.${process.pid}.${randomUUID()}.bak`;
+  // Preserve the original bytes, not a UTF-8 roundtrip or a salvaged subset.
+  // Failure must abort publication. Backups are never automatically merged
+  // later: without tombstones that would resurrect deliberate deletions.
+  writeFileSync(backup, snapshot.raw, { mode: 0o600, flag: 'wx' });
 }
 
 function writeStore(store, env = process.env) {
-  // Atomic write: tmp + rename so a crash mid-write can't truncate the store.
-  const tmp = `${credFilePath(env)}.tmp`;
-  writeFileSync(tmp, JSON.stringify(store, null, 2), { mode: 0o600 });
-  renameSync(tmp, credFilePath(env));
+  const file = credFilePath(env);
+  if (!_saveInFlight.has(file)) throw credentialStoreError('ERR_CRED_STORE_UNLOCKED');
+  // Match auth.js:617-622 and fs-atomic.js:111-121. Exclusive creation also
+  // turns an improbable random-name collision into an error, not truncation.
+  const tmp = `${file}.${process.pid}.${randomUUID().slice(0, 8)}.tmp`;
+  let fd;
+  let owned = false;
+  let published = false;
+  try {
+    fd = openSync(tmp, 'wx', 0o600);
+    owned = true;
+    writeFileSync(fd, JSON.stringify(store, null, 2));
+    closeSync(fd);
+    fd = undefined;
+    renameSync(tmp, file);
+    published = true;
+  } finally {
+    if (fd !== undefined) {
+      try { closeSync(fd); }
+      catch (error) { log.error(`credential store tmp close failed (${error.code || 'UNKNOWN'})`); }
+    }
+    if (owned && !published) {
+      try { unlinkSync(tmp); }
+      catch (error) {
+        if (error.code !== 'ENOENT') log.error(`credential store tmp cleanup failed (${error.code || 'UNKNOWN'})`);
+      }
+    }
+  }
+}
+
+function commitSnapshot(snapshot, next, env, removed = []) {
+  assertRecordSetPreserved(snapshot.store.records, next.records, removed);
+  preserveCorruptSource(snapshot, env);
+  writeStore(next, env);
+  if (snapshot.corrupt) {
+    bumpCredRepaired();
+    log.error(`credential store repaired; original bytes retained; published ${Object.keys(next.records).length} record(s)`);
+  }
+}
+
+function readStore(env = process.env) {
+  const first = readSnapshot(env);
+  if (!first.corrupt) return first.store;
+  if (Object.keys(first.store.records).length === 0) {
+    bumpCredRepaired();
+    log.error('credential store unrepairable; no intact records; source retained without overwrite');
+    return first.store;
+  }
+  try {
+    return withStoreLock(env, lockedEnv => {
+      // Another writer may have published or deleted records since the first
+      // read. Never heal from that stale snapshot, even if it has more keys.
+      const current = readSnapshot(lockedEnv);
+      if (current.corrupt && Object.keys(current.store.records).length > 0) {
+        commitSnapshot(current, current.store, lockedEnv);
+      }
+      return current.store;
+    });
+  } catch (error) {
+    bumpCredRepaired();
+    log.warn(`credential store repair deferred (${error.code || 'UNKNOWN'}); source not overwritten by this reader`);
+    return first.store;
+  }
 }
 
 /**
@@ -206,14 +315,17 @@ export function storeCredential(email, password, env = process.env) {
   const ct = Buffer.concat([cipher.update(String(password), 'utf8'), cipher.final()]);
   const tag = cipher.getAuthTag();
 
-  const store = readStore(env);
-  store.records[key] = {
-    salt: salt.toString('hex'),
-    iv: iv.toString('hex'),
-    tag: tag.toString('hex'),
-    ct: ct.toString('hex'),
-  };
-  writeStore(store, env);
+  withStoreLock(env, lockedEnv => {
+    const snapshot = readSnapshot(lockedEnv);
+    const store = { v: snapshot.store.v, records: copyRecordMap(snapshot.store.records) };
+    store.records[key] = {
+      salt: salt.toString('hex'),
+      iv: iv.toString('hex'),
+      tag: tag.toString('hex'),
+      ct: ct.toString('hex'),
+    };
+    commitSnapshot(snapshot, store, lockedEnv);
+  });
   log.info(`credential stored for ${key.replace(/(.{2}).*(@.*)/, '$1***$2')}`);
   return true;
 }
@@ -258,12 +370,15 @@ export function getCredential(email, env = process.env) {
 /** Remove a stored credential. Returns true if a record was deleted. */
 export function deleteCredential(email, env = process.env) {
   if (!isCredStoreEnabled(env)) return false;
-  const store = readStore(env);
   const key = normalizeEmail(email);
-  if (!store.records[key]) return false;
-  delete store.records[key];
-  writeStore(store, env);
-  return true;
+  return withStoreLock(env, lockedEnv => {
+    const snapshot = readSnapshot(lockedEnv);
+    if (!Object.hasOwn(snapshot.store.records, key)) return false;
+    const store = { v: snapshot.store.v, records: copyRecordMap(snapshot.store.records) };
+    delete store.records[key];
+    commitSnapshot(snapshot, store, lockedEnv, [key]);
+    return true;
+  });
 }
 
 /** List emails with stored credentials (for ops/diagnostics; no secrets). */
@@ -272,7 +387,7 @@ export function listCredentialEmails(env = process.env) {
   return Object.keys(readStore(env).records);
 }
 
-export const __testing = { credFilePath, deriveKey, normalizeEmail, tryRepairJson, salvageRecordsByRegex, isValidRecord, readStore };
+export const __testing = { credFilePath, deriveKey, normalizeEmail, tryRepairJson, salvageRecordsByRegex, isValidRecord, readStore, assertRecordSetPreserved };
 
 // Surface decrypt health through the central connect-metrics endpoint without a
 // static import cycle (metrics → credentials → config → ...). Registered at
