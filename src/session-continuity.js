@@ -350,18 +350,16 @@ function outputsCompatible(a, b) {
 // ─── Store Operations ──────────────────────────────────────────────────────
 
 function evictState(stateId) {
-  const state = statesById.get(stateId);
-  if (!state) return;
-  for (const ph of state.pairWindow) {
-    const key = `${state.scopeId}:${ph}`;
-    const set = pairIndex.get(key);
-    if (set) { set.delete(stateId); if (set.size === 0) pairIndex.delete(key); }
+  // Only dead-state membership is redundant: historical live hashes still gate
+  // drift lookup, and old commit keys still implement historical idempotency.
+  // Scan on eviction rather than add another unbounded reverse-history table.
+  for (const [key, set] of pairIndex) {
+    set.delete(stateId);
+    if (set.size === 0) pairIndex.delete(key);
   }
-  if (state.rootKey) {
-    const rootSet = pairIndex.get(state.rootKey);
-    if (rootSet) { rootSet.delete(stateId); if (rootSet.size === 0) pairIndex.delete(state.rootKey); }
+  for (const [key, owner] of commitIndex) {
+    if (owner === stateId) commitIndex.delete(key);
   }
-  if (state.commitKey) commitIndex.delete(state.commitKey);
   statesById.delete(stateId);
 }
 

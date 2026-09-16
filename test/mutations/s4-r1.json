@@ -1,0 +1,29 @@
+{
+  "tests": [
+    "test/s4-r1.test.js"
+  ],
+  "mutations": [
+    {
+      "name": "Dead pair membership is retained",
+      "file": "src/session-continuity.js",
+      "anchor": "    set.delete(stateId);",
+      "replacement": "    // Mutant: retain dead pair membership.",
+      "expectCaught": true
+    },
+    {
+      "name": "Historical commit ownership is retained",
+      "file": "src/session-continuity.js",
+      "anchor": "    if (owner === stateId) commitIndex.delete(key);",
+      "replacement": "    // Mutant: retain historical commit ownership.",
+      "expectCaught": true
+    },
+    {
+      "name": "Eviction clears other live owners",
+      "file": "src/session-continuity.js",
+      "anchor": "    set.delete(stateId);",
+      "replacement": "    set.clear();",
+      "expectCaught": true
+    }
+  ],
+  "expectBaselinePass": 4
+}
