@@ -14,6 +14,10 @@ const source = fs.readFileSync(new URL('../src/devin-connect-credentials.js', im
 function loadCredentials(text, overrides = {}) {
   const deps = {
     fs: { ...fs, ...overrides }, path, crypto,
+    // The lock owner stamp is what makes a lock left by a dead writer reclaimable,
+    // so this suite has to substitute os the same way it substitutes fs: a fixed
+    // hostname keeps the "provably gone on this host" rule testable.
+    os: { hostname: () => 'fixture-host' },
     './config.js': { config: {}, log: { info() {}, warn() {}, error() {} } },
     './devin-connect-metrics.js': { bumpConnect() {}, __registerCredHealth() {} },
   };

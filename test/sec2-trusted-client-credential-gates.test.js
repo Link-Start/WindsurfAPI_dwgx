@@ -106,3 +106,30 @@ test('SEC-2: the actual local-import authorization prefix denies discovery', () 
   assert.equal(result.status, 403);
   assert.equal(result.body.error, 'ERR_LOCAL_IMPORT_LOOPBACK_ONLY');
 });
+
+test('SEC-2: a failed credential save is reported to the login caller, not just logged', async () => {
+  // The user ticked "store the password"; the store is busy. The old shape
+  // returned success with no storage field at all, so the caller could not tell
+  // that auto-relogin was left disarmed. That is now an explicit false.
+  const { calls, login, deps } = boundary({ DEVIN_CONNECT_ALLOW_REMOTE_CRED_STORE: '1' });
+  deps.credentials.storeCredential = (...args) => {
+    calls.push(args);
+    const e = new Error('busy'); e.code = 'ERR_CRED_STORE_BUSY'; throw e;
+  };
+  const result = await login(loginArgs({ socket: { remoteAddress: '127.0.0.1' }, headers: {} }));
+  assert.equal(result.success, true, 'the login itself still succeeded');
+  assert.equal(result.credentialStored, false, 'and it must say the password was NOT stored');
+  assert.equal(calls.length, 1, 'the store was actually attempted');
+});
+
+test('SEC-2: a successful credential save is reported as true', async () => {
+  const { login } = boundary({ DEVIN_CONNECT_ALLOW_REMOTE_CRED_STORE: '1' });
+  const result = await login(loginArgs({ socket: { remoteAddress: '127.0.0.1' }, headers: {} }));
+  assert.equal(result.credentialStored, true);
+});
+
+test('SEC-2: the field is absent when the caller did not ask for storage', async () => {
+  const { login } = boundary({ DEVIN_CONNECT_ALLOW_REMOTE_CRED_STORE: '1' });
+  const result = await login({ ...loginArgs({ socket: { remoteAddress: '127.0.0.1' }, headers: {} }), storeCredential: false });
+  assert.equal(Object.hasOwn(result, 'credentialStored'), false, 'absence means "not asked", false means "asked and failed"');
+});

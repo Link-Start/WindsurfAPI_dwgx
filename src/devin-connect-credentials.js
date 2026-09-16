@@ -27,6 +27,7 @@
 import { readFileSync, writeFileSync, renameSync, mkdirSync, rmdirSync, openSync, closeSync, unlinkSync, realpathSync } from 'fs';
 import { join, dirname, basename, resolve } from 'path';
 import { createCipheriv, createDecipheriv, scryptSync, randomBytes, randomUUID } from 'crypto';
+import { hostname } from 'os';
 import { config, log } from './config.js';
 import { bumpConnect, __registerCredHealth } from './devin-connect-metrics.js';
 
@@ -149,6 +150,29 @@ function canonicalCredFile(env) {
   return join(realpathSync(dirname(file)), basename(file));
 }
 
+// A lock is only ever reclaimed when its owner is provably gone ON THIS HOST.
+// Never by age: a paused writer can still resume and publish its old snapshot,
+// and a foreign host's liveness cannot be checked from here. A writer that dies
+// mid-save used to fence every later write forever, because nothing removed the
+// directory it left behind.
+function reclaimDeadLock(lock) {
+  let owner = null;
+  try { owner = JSON.parse(readFileSync(join(lock, 'owner.json'), 'utf8')); } catch { return false; }
+  if (!owner || owner.host !== hostname() || !Number.isSafeInteger(owner.pid)) return false;
+  try {
+    process.kill(owner.pid, 0);
+    return false;                       // owner is alive — respect it
+  } catch (error) {
+    if (error.code !== 'ESRCH') return false;   // EPERM etc. — cannot prove it is gone
+  }
+  try {
+    unlinkSync(join(lock, 'owner.json'));
+    rmdirSync(lock);
+  } catch { return false; }
+  log.warn(`credential store lock reclaimed from a dead writer (pid ${owner.pid})`);
+  return true;
+}
+
 function withStoreLock(env, operation) {
   const file = canonicalCredFile(env);
   if (_saveInFlight.has(file)) throw credentialStoreError('ERR_CRED_STORE_BUSY');
@@ -156,23 +180,40 @@ function withStoreLock(env, operation) {
   let held = false;
   _saveInFlight.add(file);
   try {
-    try {
-      // Non-recursive mkdir is the cross-process claim. Never steal by age:
-      // a paused writer can still resume and publish its old snapshot.
+    const claim = () => {
+      // Non-recursive mkdir is the cross-process claim; the owner file inside it
+      // is what makes a lock left by a dead writer reclaimable (see above).
       mkdirSync(lock, { mode: 0o700 });
+      try {
+        writeFileSync(join(lock, 'owner.json'), JSON.stringify({ pid: process.pid, host: hostname() }), { mode: 0o600 });
+      } catch (error) {
+        // Without an owner stamp the lock can never be reclaimed; that is worse
+        // than not holding it at all, so give it back.
+        try { rmdirSync(lock); } catch { /* best effort */ }
+        throw error;
+      }
       held = true;
+    };
+    try {
+      claim();
     } catch (error) {
-      if (error.code === 'EEXIST') throw credentialStoreError('ERR_CRED_STORE_BUSY');
-      throw error;
+      if (error.code !== 'EEXIST') throw error;
+      if (!reclaimDeadLock(lock)) throw credentialStoreError('ERR_CRED_STORE_BUSY');
+      claim();                                   // the stale lock is gone; try once
     }
     return operation({ ...env, DEVIN_CONNECT_CRED_FILE: file });
   } finally {
     if (held) {
       try {
+        // The owner file lives inside the lock directory, so it has to go first —
+        // a plain rmdir on a non-empty directory fails with ENOTEMPTY and the lock
+        // would survive its own holder.
+        try { unlinkSync(join(lock, 'owner.json')); } catch { /* already gone */ }
         rmdirSync(lock);
       } catch (error) {
-        // A completed rename remains committed. The surviving lock fences
-        // later writes until an operator resolves the cleanup failure.
+        // A completed rename remains committed. The surviving lock fences later
+        // writes until an operator (or reclaimDeadLock, if the owner is gone)
+        // resolves it.
         log.error(`credential store lock release failed (${error.code || 'UNKNOWN'}); writes remain fenced`);
       }
     }

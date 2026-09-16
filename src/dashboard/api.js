@@ -448,6 +448,10 @@ async function processWindsurfLogin({ email, password, loginProxy, autoAdd, stor
 
   // Auto-add to account pool if requested
   let account = null;
+  // Whether the password the caller asked to store actually landed. null = not
+  // asked / store unavailable, true = encrypted and persisted, false = the save
+  // failed (busy store, missing key, record loss) and auto-relogin stays disarmed.
+  let credentialStored = null;
   if (autoAdd !== false) {
     account = addAccountByKey(result.apiKey, result.name || email);
     // Persist refresh token via the setter so it survives restart and
@@ -467,14 +471,19 @@ async function processWindsurfLogin({ email, password, loginProxy, autoAdd, stor
     // break the login that already succeeded. Plaintext password is never
     // logged (only the masked email).
     if (credStoreGateOpen(wantStore, req)) {
+      credentialStored = true;   // assume the store is a no-op unless it says otherwise
       try {
         const { storeCredential, isCredStoreEnabled } = await import('../devin-connect-credentials.js');
         if (isCredStoreEnabled()) {
-          storeCredential(email, password);
-          log.info(`Credential stored for auto-relogin: ${maskEmail(email)}`);
+          credentialStored = storeCredential(email, password) !== false;
+          if (credentialStored) log.info(`Credential stored for auto-relogin: ${maskEmail(email)}`);
+          else log.warn(`Credential NOT stored for ${maskEmail(email)} — auto-relogin stays disarmed for this account`);
         }
       } catch (e) {
-        log.warn(`Could not persist credential for re-login: ${e.message}`);
+        // A failed save used to be invisible in the response: the user asked for
+        // storage and got success back. Surface it instead of only warning.
+        credentialStored = false;
+        log.warn(`Could not persist credential for re-login: ${e.code || e.message}`);
       }
     }
   }
@@ -494,6 +503,7 @@ async function processWindsurfLogin({ email, password, loginProxy, autoAdd, stor
     email: result.email,
     apiServerUrl: result.apiServerUrl,
     account: account ? { id: account.id, email: account.email, status: account.status } : null,
+    ...(wantStore ? { credentialStored: credentialStored === true } : {}),
   };
 }
 

@@ -79,7 +79,13 @@ export async function run({
   let note = '';
   const credEnabled = isCredStoreEnabled(env);
   if (storePassword && credEnabled) {
-    stored = storeCredential(email, password, env) !== false;
+    // A contended store must not abort a login that already succeeded: warn,
+    // keep the account, and let the operator retry the password save.
+    try { stored = storeCredential(email, password, env) !== false; }
+    catch (e) {
+      stored = false;
+      note = `credential NOT stored (${e.code || e.message}) — auto-relogin disarmed for this account`;
+    }
   } else if (storePassword && !credEnabled) {
     note = 'no DEVIN_CONNECT_CRED_KEY — password NOT stored, auto-relogin disarmed for this account';
   } else if (!storePassword) {
