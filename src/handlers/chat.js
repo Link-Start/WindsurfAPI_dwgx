@@ -1678,55 +1678,58 @@ function genId() {
  * `<env>` keys. If nothing is found, returns '' and the override gets no
  * environment block (existing behaviour preserved).
  */
+// Match the cwd phrasing every Anthropic-format client we have seen in
+// the wild emits, while staying narrow enough that prose mentions like
+// "the working directory in the docs" don't trip it. Two formats matter:
+//
+//   (a) Canonical `<env>` key/value block (older Claude Code, opencode,
+//       Cline): `Working directory: /path` on its own line. Must allow
+//       a leading `<env>` tag, optional `-`/`*` bullet prefix, and `:`
+//       or `=` separator.
+//
+//   (b) Claude Code 2.1+ prose system prompt: `…and the current working
+//       directory is /path.`  No newline anchor, no separator, the path
+//       just trails the phrase. (Confirmed via the env-NOT-lifted probe
+//       diagnostic against Claude Code v2.1.114.)
+//
+// The capture group is locked to `[/~]…` so we only grab actual-looking
+// paths — "the working directory you choose" or similar abstract prose
+// never has a `/` or `~` in the captured slot and is rejected.
+const CALLER_ENV_PATH_TAIL = `(?:[\\/~]|[A-Za-z]:\\\\)[^\\s\`'"<>\\n.,;)]+`;
+// Adjective slot for "Working directory" — Claude Code 2.x uses
+// "Primary working directory: D:\..." instead of the canonical
+// "Working directory: ...". Other clients use "Current" / "Initial" /
+// "Default" / "Active" / "Project" similarly. Optional, matched
+// case-insensitively. (#106 / #107 follow-up: the user's 26 KB Claude
+// Code system prompt mentions "current working directory" mid-prose
+// first, then later has the actual `- Primary working directory: D:\...`
+// bullet — old regex only allowed the canonical key so the bullet
+// never matched and env never lifted.)
+const CALLER_ENV_ADJ = `(?:Primary|Current|Initial|Default|Active|Project|My)\\s+`;
+const CALLER_ENV_PATTERNS = [
+  ['cwd', new RegExp(
+    // Form (a): line-anchored key/value, optional adjective prefix
+    `(?:^|\\n)\\s*(?:[-*]\\s+)?(?:${CALLER_ENV_ADJ})?(?:Working\\s+directory|cwd)\\s*[:=]\\s*\`?(${CALLER_ENV_PATH_TAIL})\`?` +
+    // Form (b): prose "current working directory is /path" (adjacent path)
+    `|(?:current\\s+working\\s+directory(?:\\s+is)?)\\s*[:=]?\\s*\`?(${CALLER_ENV_PATH_TAIL})\`?` +
+    // Form (c): Codex / XML-style <cwd>/path/</cwd> tags (no :/= separator)
+    `|<cwd>\\s*(${CALLER_ENV_PATH_TAIL})\\s*</cwd>`,
+    'gi'
+  ), (v) => `- Working directory: ${v}`],
+  // Git repo: accept "Is directory a git repo" (Claude Code <2.x) AND
+  // "Is a git repository" / "Is git repo" (Claude Code 2.x).
+  ['git', /(?:^|\n)\s*(?:[-*]\s+)?Is(?:\s+(?:directory\s+)?(?:a\s+)?)git\s+repo(?:sitory)?\s*[:=]\s*([^\n<]+)/i, (v) => `- Is the directory a git repo: ${v}`],
+  ['platform', /(?:^|\n)\s*(?:[-*]\s+)?Platform\s*[:=]\s*([^\n<]+)/i, (v) => `- Platform: ${v}`],
+  ['os', /(?:^|\n)\s*(?:[-*]\s+)?OS\s+[Vv]ersion\s*[:=]\s*([^\n<]+)/i, (v) => `- OS version: ${v}`],
+];
+
+const CALLER_ENV_FILE_EXT = /\.(?:js|mjs|cjs|ts|tsx|jsx|json|jsonc|md|mdx|py|pyc|go|rs|java|kt|swift|cpp|cc|cxx|c|h|hpp|html?|css|scss|sass|less|yaml|yml|toml|ini|cfg|conf|sh|bash|zsh|fish|ps1|bat|cmd|exe|dll|so|dylib|zip|tar|gz|bz2|xz|7z|rar|png|jpe?g|gif|webp|svg|ico|mp[34]|wav|flac|ogg|webm|mov|avi|mkv|pdf|docx?|xlsx?|pptx?|csv|tsv|sql|db|sqlite|log|lock|map|min\.js|min\.css)$/i;
+const CALLER_ENV_BULLET = /^[\s]*[-*•]\s+`?((?:[A-Za-z]:[\\/]|\/[A-Za-z]|~[\\/])[^\s`'"<>\n]+)`?\s*$/gm;
+
 export function extractCallerEnvironment(messages) {
   if (!Array.isArray(messages)) return '';
   const seen = new Set();
   const out = [];
-
-  // Match the cwd phrasing every Anthropic-format client we have seen in
-  // the wild emits, while staying narrow enough that prose mentions like
-  // "the working directory in the docs" don't trip it. Two formats matter:
-  //
-  //   (a) Canonical `<env>` key/value block (older Claude Code, opencode,
-  //       Cline): `Working directory: /path` on its own line. Must allow
-  //       a leading `<env>` tag, optional `-`/`*` bullet prefix, and `:`
-  //       or `=` separator.
-  //
-  //   (b) Claude Code 2.1+ prose system prompt: `…and the current working
-  //       directory is /path.`  No newline anchor, no separator, the path
-  //       just trails the phrase. (Confirmed via the env-NOT-lifted probe
-  //       diagnostic against Claude Code v2.1.114.)
-  //
-  // The capture group is locked to `[/~]…` so we only grab actual-looking
-  // paths — "the working directory you choose" or similar abstract prose
-  // never has a `/` or `~` in the captured slot and is rejected.
-  const PATH_TAIL = `(?:[\\/~]|[A-Za-z]:\\\\)[^\\s\`'"<>\\n.,;)]+`;
-  // Adjective slot for "Working directory" — Claude Code 2.x uses
-  // "Primary working directory: D:\..." instead of the canonical
-  // "Working directory: ...". Other clients use "Current" / "Initial" /
-  // "Default" / "Active" / "Project" similarly. Optional, matched
-  // case-insensitively. (#106 / #107 follow-up: the user's 26 KB Claude
-  // Code system prompt mentions "current working directory" mid-prose
-  // first, then later has the actual `- Primary working directory: D:\...`
-  // bullet — old regex only allowed the canonical key so the bullet
-  // never matched and env never lifted.)
-  const ADJ = `(?:Primary|Current|Initial|Default|Active|Project|My)\\s+`;
-  const PATTERNS = [
-    ['cwd', new RegExp(
-      // Form (a): line-anchored key/value, optional adjective prefix
-      `(?:^|\\n)\\s*(?:[-*]\\s+)?(?:${ADJ})?(?:Working\\s+directory|cwd)\\s*[:=]\\s*\`?(${PATH_TAIL})\`?` +
-      // Form (b): prose "current working directory is /path" (adjacent path)
-      `|(?:current\\s+working\\s+directory(?:\\s+is)?)\\s*[:=]?\\s*\`?(${PATH_TAIL})\`?` +
-      // Form (c): Codex / XML-style <cwd>/path/</cwd> tags (no :/= separator)
-      `|<cwd>\\s*(${PATH_TAIL})\\s*</cwd>`,
-      'gi'
-    ), (v) => `- Working directory: ${v}`],
-    // Git repo: accept "Is directory a git repo" (Claude Code <2.x) AND
-    // "Is a git repository" / "Is git repo" (Claude Code 2.x).
-    ['git', /(?:^|\n)\s*(?:[-*]\s+)?Is(?:\s+(?:directory\s+)?(?:a\s+)?)git\s+repo(?:sitory)?\s*[:=]\s*([^\n<]+)/i, (v) => `- Is the directory a git repo: ${v}`],
-    ['platform', /(?:^|\n)\s*(?:[-*]\s+)?Platform\s*[:=]\s*([^\n<]+)/i, (v) => `- Platform: ${v}`],
-    ['os', /(?:^|\n)\s*(?:[-*]\s+)?OS\s+[Vv]ersion\s*[:=]\s*([^\n<]+)/i, (v) => `- OS version: ${v}`],
-  ];
 
   for (const m of messages) {
     if (!m) continue;
@@ -1736,7 +1739,7 @@ export function extractCallerEnvironment(messages) {
     else continue;
     if (!content) continue;
 
-    for (const [key, re, fmt] of PATTERNS) {
+    for (const [key, re, fmt] of CALLER_ENV_PATTERNS) {
       if (seen.has(key)) continue;
       // For the cwd pattern (global flag), iterate matches and pick the
       // first one that actually has a non-empty captured path. The earlier
@@ -1745,6 +1748,9 @@ export function extractCallerEnvironment(messages) {
       // because the path lives in a later bullet — we must not stop at
       // the first textual hit.
       if (re.global) {
+        // matchAll clones the expression and copies lastIndex. Reset the
+        // shared source before cloning; early breaks cannot poison later calls.
+        re.lastIndex = 0;
         for (const match of content.matchAll(re)) {
           const value = (match.slice(1).find(Boolean) || '').trim();
           if (!value || /[\x00-\x1f]/.test(value) || value === '<workspace>') continue;
@@ -1761,7 +1767,7 @@ export function extractCallerEnvironment(messages) {
         out.push(fmt(value));
       }
     }
-    if (seen.size === PATTERNS.length) break;
+    if (seen.size === CALLER_ENV_PATTERNS.length) break;
   }
 
   // Only emit an environment block if we actually have the cwd. Platform /
@@ -1811,8 +1817,6 @@ export function extractCallerEnvironment(messages) {
 // to avoid grabbing a path the user mentioned in passing later in chat.
 function scanForBulletCwdInSystem(messages) {
   if (!Array.isArray(messages)) return '';
-  const FILE_EXT = /\.(?:js|mjs|cjs|ts|tsx|jsx|json|jsonc|md|mdx|py|pyc|go|rs|java|kt|swift|cpp|cc|cxx|c|h|hpp|html?|css|scss|sass|less|yaml|yml|toml|ini|cfg|conf|sh|bash|zsh|fish|ps1|bat|cmd|exe|dll|so|dylib|zip|tar|gz|bz2|xz|7z|rar|png|jpe?g|gif|webp|svg|ico|mp[34]|wav|flac|ogg|webm|mov|avi|mkv|pdf|docx?|xlsx?|pptx?|csv|tsv|sql|db|sqlite|log|lock|map|min\.js|min\.css)$/i;
-  const BULLET = /^[\s]*[-*•]\s+`?((?:[A-Za-z]:[\\/]|\/[A-Za-z]|~[\\/])[^\s`'"<>\n]+)`?\s*$/m;
   for (const m of messages) {
     if (m?.role !== 'system') continue;
     let content;
@@ -1820,12 +1824,13 @@ function scanForBulletCwdInSystem(messages) {
     else if (Array.isArray(m.content)) content = m.content.filter(p => p?.type === 'text').map(p => p.text || '').join('\n');
     else continue;
     if (!content) continue;
-    // matchAll requires the regex to be global; build a fresh global copy.
-    const re = new RegExp(BULLET.source, 'gm');
-    for (const match of content.matchAll(re)) {
+    // matchAll uses a clone, including its starting index. No exec/test call
+    // advances this shared global expression; reset also makes that invariant explicit.
+    CALLER_ENV_BULLET.lastIndex = 0;
+    for (const match of content.matchAll(CALLER_ENV_BULLET)) {
       const cand = match[1];
       if (!cand || cand.length < 5) continue;
-      if (FILE_EXT.test(cand)) continue;
+      if (CALLER_ENV_FILE_EXT.test(cand)) continue;
       if (cand === '<workspace>') continue;
       return cand;
     }

@@ -1,0 +1,29 @@
+{
+  "tests": [
+    "test/s1-p3-regexp-hoist.test.js"
+  ],
+  "expectBaselinePass": 3,
+  "mutations": [
+    {
+      "name": "P3 mutation 1",
+      "file": "src/handlers/chat.js",
+      "anchor": "        re.lastIndex = 0;",
+      "replacement": "        re.lastIndex = 10000;",
+      "expectCaught": true
+    },
+    {
+      "name": "P3 mutation 2",
+      "file": "src/handlers/chat.js",
+      "anchor": "    CALLER_ENV_BULLET.lastIndex = 0;",
+      "replacement": "    CALLER_ENV_BULLET.lastIndex = 10000;",
+      "expectCaught": true
+    },
+    {
+      "name": "P3 mutation 3",
+      "file": "src/handlers/chat.js",
+      "anchor": "export function extractCallerEnvironment(messages) {\n  if (!Array.isArray(messages)) return '';",
+      "replacement": "export function extractCallerEnvironment(messages) {\n  new RegExp(CALLER_ENV_PATTERNS[0][1]);\n  if (!Array.isArray(messages)) return '';",
+      "expectCaught": true
+    }
+  ]
+}
