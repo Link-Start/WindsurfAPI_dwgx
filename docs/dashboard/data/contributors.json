@@ -580,6 +580,16 @@
       "mergedAt": "2026-09-14",
       "title": "fix(dashboard): local import misses Devin-desktop logins — add Devin flavor + lift 128KB value cap",
       "summary": "桌面端重品牌后 userData 在 `%APPDATA%\\Devin` / `~/Library/Application Support/Devin`,flavors 原先只有 Windsurf* 会 not_found。作者用四个 not_found 定位到目录名,再量 payload 发现 windsurfAuthStatus 约 160KB 被 128KB 上限静默跳过——第二个原因不是从第一个顺推的。flavors 把 `Devin` 放首位;上限 128KB→512KB,DB 级仍 24MB。官方文档桌面三端都是大写 `Devin`,CLI 是小写 `devin`,两处不该合成一个常量。维护方补了 160KB 能导入、512KB+1 仍跳过的 sqlite 样例,把这条上限钉住。CI 6/6(run 34703784933)。"
+    },
+    {
+      "login": "21hbguo",
+      "githubId": 139569698,
+      "pr": 271,
+      "weight": "A",
+      "weightLabel": "并行工具调用 run 里的游离 assistant 文本吸进交错块;两轮评审把丢图、空 ID 配对、整条字段丢失三处钉掉",
+      "mergedAt": "2026-09-16",
+      "title": "fix(tools): absorb stray assistant text inside parallel tool-call runs",
+      "summary": "Codex 的 responses 路径每轮会在并行 tool_calls 之间重放一条 reasoning+text 的 assistant 条目,归一化后是 [call, call, text] 的同源 3 连,上游状态机拒。作者定位到 interleaveParallelToolMessages 只交错 call/result 对、不看游离文本,改成把文本折进首个 call 的回合。维护方评审两轮:M1 首个 call 的数组 content 被压平成字符串 → image_url 部件在进 extractInlineImages 之前消失(wire 实测 images 1→0,与 #265 刚钉死的 isMergeableText 守卫冲突);M3.1 空 tool_call_id 能与空结果 id 配对(两个空串相等不是归属证据);M3.2 带自有字段的游离条目(reasoning_content/signature 等)折进后字段静默丢失。作者第二轮全改到位:追加 text part 而不是压平、两处恢复 tcid &&、只在 role/content/tool_calls 且 content 全文本 part 时才折叠,否则整条透传追加在交错块末尾(已声明代价:同源 ≥3 连续此类条目仍可能连发,与该形状修复前一致)。维护方合并时复核:作者测试 79/79;独立探针 10/10(图存活、空 id 透传、字段存活、既有不变量);270 条完整请求 Buffer 对 v3.9.34 pristine 逐字节一致(5 条预处理路径 × native × 三组 env);规格 anchor 重指 + 基线重测 72→79 / 103→110 / 81→88;注入一条突变确认 CAUGHT、一条 KNOWN SURVIVOR 确认仍 SURVIVED。默认路径与 wire 无变化,随下一版发布。"
     }
   ]
 }
