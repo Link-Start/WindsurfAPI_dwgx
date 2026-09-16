@@ -77,7 +77,7 @@
     {
       "name": "H3-M11: copy batch reasoning onto later split calls",
       "file": "src/handlers/tool-emulation.js",
-      "anchor": "            delete singleAssistant.reasoning_content;\n            delete singleAssistant.reasoning;",
+      "anchor": "              delete singleAssistant.reasoning_content;\n              delete singleAssistant.reasoning;",
       "replacement": "            // Mutation: retain batch reasoning on later split calls.",
       "expectCaught": true
     }

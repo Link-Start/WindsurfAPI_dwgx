@@ -3,7 +3,7 @@
     "test/tool-emulation-ref-fanout.test.js",
     "test/tool-emulation.test.js"
   ],
-  "expectBaselinePass": 81,
+  "expectBaselinePass": 88,
   "mutations": [
     {
       "name": "the original defect: cycle check only, no size bound at all (levels=20 -> 18193 ms / 61.9 MB)",

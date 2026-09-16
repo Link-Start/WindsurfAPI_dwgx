@@ -1,9 +1,9 @@
 {
-  "_baseline_provenance": "MEASURED ON THE LINUX RUNNER, not locally. The harness reports `baseline pass=72` for test/tool-emulation.test.js; that is the number this spec declares. An earlier revision of this file declared 60 because the 2026-09-13 sweep reported \"baseline pass=60 but spec expects 72\" -- that reading came from a run TRUNCATED by `--test-force-exit`, which ended the process after part of the suites and still exited 0. The flag was removed from package.json, scripts/run-test-shard.mjs and the three harness scripts (commit \"test: drop --test-force-exit...\"), and the harness now measures a stable 72 across runs. The 12-test gap this file used to explain as \"harness 60 vs per-file 72\" was that truncation, not two counting conventions. If a future run reports a different number, re-measure with `node scripts/spec-baseline-audit.mjs interleave-parallel-tool-history` rather than narrowing the mutations to make the spec start.",
+  "_baseline_provenance": "MEASURED ON THE LINUX RUNNER, not locally. The harness reports `baseline pass=72` for test/tool-emulation.test.js; that is the number this spec declares. An earlier revision of this file declared 60 because the 2026-09-13 sweep reported \"baseline pass=60 but spec expects 72\" -- that reading came from a run TRUNCATED by `--test-force-exit`, which ended the process after part of the suites and still exited 0. The flag was removed from package.json, scripts/run-test-shard.mjs and the three harness scripts (commit \"test: drop --test-force-exit...\"), and the harness now measures a stable 72 across runs. The 12-test gap this file used to explain as \"harness 60 vs per-file 72\" was that truncation, not two counting conventions. If a future run reports a different number, re-measure with `node scripts/spec-baseline-audit.mjs interleave-parallel-tool-history` rather than narrowing the mutations to make the spec start. Re-measured 79 on 2026-09-16: PR #271 added 7 tests to test/tool-emulation.test.js, and the same +7 moved bash-prefix-repair-boundary 103->110 and schema-ref-fanout-budget 81->88; the KNOWN SURVIVOR anchor above was re-pointed in the same commit (the consume block was nested one level deeper).",
   "tests": [
     "test/tool-emulation.test.js"
   ],
-  "expectBaselinePass": 72,
+  "expectBaselinePass": 79,
   "mutations": [
     {
       "name": "call site removed — the normalizer stops interleaving parallel tool history, so a batched assistant turn encodes as consecutive role=2 frames and upstream 500/529s the whole session (the defect PR #261 fixes)",
@@ -20,8 +20,8 @@
     {
       "name": "KNOWN SURVIVOR — a repeated tool_call_id is still split into two assistant frames with the same id (probe 2026-09-13: assistant[c1] / tool(c1) / assistant[c1]). Not covered by design: these tests pin the shape the upstream state machine needs, not OpenAI's uniqueness rule. Deduping would change behaviour for a malformed-history case with no capture behind it.",
       "file": "src/handlers/tool-emulation.js",
-      "anchor": "          const matchIdx = toolMsgs.findIndex(\n            (tm, idx) => !usedIndices.has(idx) && String(tm?.tool_call_id ?? '') === tcid,\n          );",
-      "replacement": "          const matchIdx = toolMsgs.findIndex(\n            (tm, idx) => String(tm?.tool_call_id ?? '') === tcid,\n          );",
+      "anchor": "            const matchIdx = toolMsgs.findIndex(\n              (tm, idx) => tcid && !usedIndices.has(idx) && String(tm?.tool_call_id ?? '') === tcid,\n            );",
+      "replacement": "            const matchIdx = toolMsgs.findIndex(\n              (tm, idx) => tcid && String(tm?.tool_call_id ?? '') === tcid,\n            );",
       "expectCaught": false
     }
   ]
