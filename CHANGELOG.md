@@ -19,9 +19,9 @@
 
 | | |
 |---|---|
-| 发布说明 | **185** 份,v2.0.6 → v3.9.34 |
-| git tag | 196 个 |
-| 当前 | **v3.9.34**(2026-09-14) |
+| 发布说明 | **186** 份,v2.0.6 → v3.9.35 |
+| git tag | 197 个 |
+| 当前 | **v3.9.35**(2026-09-16) |
 | 运行时依赖 | **0** —— 从第一个版本保持到现在 |
 
 ```mermaid
@@ -29,7 +29,7 @@ flowchart LR
     A["v2.0.x<br/>118 个 tag<br/><br/>OpenAI 兼容层成型"]
     B["v3.0 – v3.8<br/><br/>Anthropic / Gemini 前端<br/>Dashboard 与账号池"]
     C["v3.9.0 – v3.9.16<br/><br/>DEVIN_CONNECT 直连<br/>native tool bridge"]
-    D["v3.9.17 – v3.9.34<br/><br/>工具方言 · reasoning 边界<br/>Connect 目录 · ACU opt-in"]
+    D["v3.9.17 – v3.9.35<br/><br/>工具方言 · reasoning 边界<br/>Connect 目录 · ACU opt-in"]
     A --> B --> C --> D
 
     classDef past fill:#8957e522,stroke:#8957e5
@@ -41,6 +41,10 @@ flowchart LR
 ## 最近的版本
 
 下面是 3.9.x 全系。更早的版本请直接翻 [`docs/releases/`](docs/releases/)。
+
+### [v3.9.35](docs/releases/RELEASE_NOTES_3.9.35.md) · 2026-09-16
+
+`DEVIN_CONNECT_REPLAY_REASONING` 开启时,只带 reasoning 的 assistant 回合不再被空回合过滤器吞掉;orphan 过滤器与 reasoning replay 的注释写准并加守卫(行为零变化,默认路径逐字节不变)。无 API 破坏,ACU `^22` 仍默认关。
 
 ### [v3.9.34](docs/releases/RELEASE_NOTES_3.9.34.md) · 2026-09-14
 
