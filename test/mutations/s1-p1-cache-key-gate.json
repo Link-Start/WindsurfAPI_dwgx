@@ -1,0 +1,36 @@
+{
+  "tests": [
+    "test/s1-p1-cache-gate.test.js"
+  ],
+  "expectBaselinePass": 4,
+  "mutations": [
+    {
+      "name": "P1 mutation 1",
+      "file": "src/handlers/chat.js",
+      "anchor": "  if (!isCacheEnabled() || !hasPerUserScope(callerKey)) return null;",
+      "replacement": "  if (!hasPerUserScope(callerKey)) return null;",
+      "expectCaught": true
+    },
+    {
+      "name": "P1 mutation 2",
+      "file": "src/handlers/chat.js",
+      "anchor": "  if (!isCacheEnabled() || !hasPerUserScope(callerKey)) return null;",
+      "replacement": "  if (!isCacheEnabled()) return null;",
+      "expectCaught": true
+    },
+    {
+      "name": "P1 mutation 3",
+      "file": "src/handlers/chat.js",
+      "anchor": "  return computeCacheKey(body, callerKey);",
+      "replacement": "  return computeCacheKey({ ...body, model: 'wrong-model' }, callerKey);",
+      "expectCaught": true
+    },
+    {
+      "name": "P1 mutation 4",
+      "file": "src/handlers/chat.js",
+      "anchor": "    && !context.__fallbackAttempt;",
+      "replacement": "    && true;",
+      "expectCaught": true
+    }
+  ]
+}

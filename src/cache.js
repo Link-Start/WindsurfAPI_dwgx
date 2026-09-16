@@ -14,7 +14,7 @@ const TTL_MS = 5 * 60 * 1000;
 const MAX_ENTRIES = 500;
 const DEFAULT_MAX_BYTES = 16 * 1024 * 1024;
 
-function isCacheEnabled() {
+export function isCacheEnabled() {
   const raw = String(process.env.RESPONSE_CACHE_ENABLED ?? process.env.WINDSURFAPI_RESPONSE_CACHE ?? '1')
     .trim()
     .toLowerCase();

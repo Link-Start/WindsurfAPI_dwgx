@@ -15,7 +15,7 @@ import { safeAccountRef, safeKeyRef, safeLogValue } from '../log-safety.js';
 import { recordRequest, recordTokenUsage, recordPolicyBlocked, recordRateLimited } from '../dashboard/stats.js';
 import { extractIntentFromNarrative, detectToolIntentInNarrative, maskNonActionableRegions } from './intent-extractor.js';
 import { isModelAllowed } from '../dashboard/model-access.js';
-import { cacheKey, cacheGet, cacheSet } from '../cache.js';
+import { cacheKey as computeCacheKey, cacheGet, cacheSet, isCacheEnabled } from '../cache.js';
 import { isExperimentalEnabled, getBreakerTunable, strictUsageTotal } from '../runtime-config.js';
 import { neutralizeClientIdentity, neutralizeMessageContent } from './identity-neutralize.js';
 import { normalizeStop, applyStop, StopSequenceGate } from '../stop-sequences.js';
@@ -1179,6 +1179,15 @@ export function hasPerUserScope(callerKey) {
   // users behind one proxy never share cache/cascade state.
   if (SINGLE_TENANT_CACHE && (callerKey.includes(':client:') || callerKey.startsWith('client:'))) return true;
   return false;
+}
+
+// Keep both existing key sites gated without moving either snapshot in time.
+// The outer key must still precede fallback/body rewrites; the inner fallback
+// key must still describe the rewritten body. The cache module's public key
+// function remains unconditional for its other callers.
+function cacheKey(body, callerKey) {
+  if (!isCacheEnabled() || !hasPerUserScope(callerKey)) return null;
+  return computeCacheKey(body, callerKey);
 }
 
 function isToolSensitiveOpusModel(modelKey = '') {
