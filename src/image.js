@@ -1,6 +1,7 @@
 import https from 'node:https';
 import http from 'node:http';
 import { lookup as dnsLookup } from 'node:dns';
+import { constants as bufferConstants } from 'node:buffer';
 import { log } from './config.js';
 import { tryExtractPdf } from './pdf.js';
 import { isPrivateIp, resolvePublicAddresses } from './net-safety.js';
@@ -81,7 +82,8 @@ function decodePixels(buf) {
 // Bilinear downscale of an RGBA buffer to (dstW x dstH). Pure Node, no deps.
 // Only ever called to shrink, so no special upscale handling is needed.
 function scaleRGBA(src, srcW, srcH, dstW, dstH) {
-  const out = Buffer.alloc(dstW * dstH * 4);
+  // Every RGBA byte is overwritten below before the buffer can escape.
+  const out = Buffer.allocUnsafe(dstW * dstH * 4);
   // Map dst pixel centers back into src space.
   const xRatio = srcW / dstW;
   const yRatio = srcH / dstH;
@@ -124,6 +126,8 @@ export async function shrinkPixels(base64, opts = {}) {
   const maxBytes = opts.maxBytes ?? IMAGE_MAX_BYTES;
   const startQuality = opts.quality ?? IMAGE_JPEG_QUALITY;
   const MIN_JPEG_QUALITY = 60; // quality floor before we shrink dimensions further
+  // The rounded 1568 -> 128 schedule has 13 passes, including both endpoints.
+  const MAX_DEFAULT_DIMENSION_PASSES = 13;
   // Dimension floor for the byte-convergence loop. The vendored jpeg-js encoder
   // produces larger output than jimp's for incompressible content, so allow the
   // long side to shrink further than jimp needed (128 vs the old 256) to still
@@ -133,6 +137,8 @@ export async function shrinkPixels(base64, opts = {}) {
 
   try {
     const buf = Buffer.from(base64, 'base64');
+    let finalJpeg;
+    let outBase64Len;
     // Pre-decode budget check: read the header dimensions (cheap, no pixel
     // decode) and bail before allocating anything if the declared pixel count is
     // absurd. This shields the decoders from a crafted decode bomb (tiny bytes,
@@ -149,8 +155,20 @@ export async function shrinkPixels(base64, opts = {}) {
     if (!srcW || !srcH) return { ok: false, error: 'decoded image has no dimensions' };
 
     let curLong = Math.min(maxLongSide, Math.max(srcW, srcH));
+    let maxDimensionPasses = MAX_DEFAULT_DIMENSION_PASSES;
+    if (!Number.isFinite(curLong)) {
+      // Preserve legacy non-finite option behavior; validation is a separate policy.
+      maxDimensionPasses = Infinity;
+    } else if (curLong > 1568) {
+      // Larger overrides retain every pass of the same rounded recurrence.
+      maxDimensionPasses = 1;
+      for (let probe = curLong; probe > MIN_LONG_SIDE;
+        probe = Math.max(MIN_LONG_SIDE, Math.round(probe * 0.8))) {
+        maxDimensionPasses++;
+      }
+    }
     let outBase64 = '';
-    for (;;) {
+    for (let dimensionPass = 0; dimensionPass < maxDimensionPasses; dimensionPass++) {
       // Scale from the full-res original each pass so repeated downscales never
       // compound quality loss.
       let w = srcW, h = srcH, data = original.data;
@@ -163,13 +181,21 @@ export async function shrinkPixels(base64, opts = {}) {
       let quality = startQuality;
       for (;;) {
         const jpg = jpegEncode({ data, width: w, height: h }, quality);
-        outBase64 = jpg.data.toString('base64');
-        if (outBase64.length <= maxBytes || quality <= MIN_JPEG_QUALITY) break;
+        finalJpeg = jpg.data;
+        // Padded base64 emits four characters per complete or partial triplet.
+        outBase64Len = 4 * Math.ceil(finalJpeg.length / 3);
+        if (outBase64Len > bufferConstants.MAX_STRING_LENGTH) {
+          // Preserve the native string-limit failure instead of trying a later candidate.
+          finalJpeg.toString('base64');
+        }
+        if (outBase64Len <= maxBytes || quality <= MIN_JPEG_QUALITY) break;
         quality = Math.max(MIN_JPEG_QUALITY, quality - 10);
       }
-      if (outBase64.length <= maxBytes || curLong <= MIN_LONG_SIDE) break;
+      if (outBase64Len <= maxBytes || curLong <= MIN_LONG_SIDE) break;
       curLong = Math.max(MIN_LONG_SIDE, Math.round(curLong * 0.8));
     }
+    // No candidate is encoded again: serialize only the buffer selected above.
+    outBase64 = finalJpeg.toString('base64');
     return { ok: true, base64_data: outBase64, mime_type: 'image/jpeg' };
   } catch (e) {
     return { ok: false, error: e?.message || String(e) };

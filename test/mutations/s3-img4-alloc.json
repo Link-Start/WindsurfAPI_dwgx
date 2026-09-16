@@ -1,0 +1,22 @@
+{
+  "tests": [
+    "test/image-img4-alloc.test.js"
+  ],
+  "expectBaselinePass": 3,
+  "mutations": [
+    {
+      "name": "IMG-4 mutation 1",
+      "file": "src/image.js",
+      "anchor": "  const out = Buffer.allocUnsafe(dstW * dstH * 4);",
+      "replacement": "  const out = Buffer.alloc(dstW * dstH * 4);",
+      "expectCaught": true
+    },
+    {
+      "name": "IMG-4 mutation 2",
+      "file": "src/image.js",
+      "anchor": "      for (let c = 0; c < 4; c++) {",
+      "replacement": "      for (let c = 0; c < 3; c++) {",
+      "expectCaught": true
+    }
+  ]
+}

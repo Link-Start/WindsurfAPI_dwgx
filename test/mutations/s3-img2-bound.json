@@ -1,0 +1,22 @@
+{
+  "tests": [
+    "test/image-img2-bound.test.js"
+  ],
+  "expectBaselinePass": 6,
+  "mutations": [
+    {
+      "name": "IMG-2 mutation 1",
+      "file": "src/image.js",
+      "anchor": "  const MAX_DEFAULT_DIMENSION_PASSES = 13;",
+      "replacement": "  const MAX_DEFAULT_DIMENSION_PASSES = 12;",
+      "expectCaught": true
+    },
+    {
+      "name": "IMG-2 mutation 2",
+      "file": "src/image.js",
+      "anchor": "      curLong = Math.max(MIN_LONG_SIDE, Math.round(curLong * 0.8));",
+      "replacement": "      curLong = Math.max(MIN_LONG_SIDE, Math.floor(curLong * 0.8));",
+      "expectCaught": true
+    }
+  ]
+}

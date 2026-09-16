@@ -1,0 +1,43 @@
+{
+  "tests": [
+    "test/image-img1-base64.test.js"
+  ],
+  "expectBaselinePass": 8,
+  "mutations": [
+    {
+      "name": "IMG-1 mutation 1",
+      "file": "src/image.js",
+      "anchor": "        if (outBase64Len > bufferConstants.MAX_STRING_LENGTH) {\n          // Preserve the native string-limit failure instead of trying a later candidate.\n          finalJpeg.toString('base64');\n        }",
+      "replacement": "        // String-limit guard removed.",
+      "expectCaught": true
+    },
+    {
+      "name": "IMG-1 mutation 2",
+      "file": "src/image.js",
+      "anchor": "        outBase64Len = 4 * Math.ceil(finalJpeg.length / 3);",
+      "replacement": "        outBase64Len = 4 * Math.floor(finalJpeg.length / 3);",
+      "expectCaught": true
+    },
+    {
+      "name": "IMG-1 mutation 3",
+      "file": "src/image.js",
+      "anchor": "        if (outBase64Len <= maxBytes || quality <= MIN_JPEG_QUALITY) break;",
+      "replacement": "        if (outBase64Len < maxBytes || quality <= MIN_JPEG_QUALITY) break;",
+      "expectCaught": true
+    },
+    {
+      "name": "IMG-1 mutation 4",
+      "file": "src/image.js",
+      "anchor": "        outBase64Len = 4 * Math.ceil(finalJpeg.length / 3);",
+      "replacement": "        outBase64Len = finalJpeg.toString('base64').length;",
+      "expectCaught": true
+    },
+    {
+      "name": "IMG-1 mutation 5",
+      "file": "src/image.js",
+      "anchor": "      if (outBase64Len <= maxBytes || curLong <= MIN_LONG_SIDE) break;",
+      "replacement": "      if (outBase64Len < maxBytes || curLong <= MIN_LONG_SIDE) break;",
+      "expectCaught": true
+    }
+  ]
+}
