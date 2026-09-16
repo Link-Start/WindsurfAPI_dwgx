@@ -2530,6 +2530,13 @@ export function finalizeConnectAccount(acct, { model, selector = null, startTime
     // prompt the caller sent; a single such request used to cascade the whole pool
     // to "exhausted (dead session tokens)". Release cleanly, exactly like a success.
     else if (err.code === 'CONTENT_BLOCKED') { /* no penalty — request content rejected, not an account fault */ }
+    else if (err.code === 'ERR_CONNECT_ACCOUNT_HOST_NOT_ALLOWED') {
+      // The account's stored apiServerUrl was refused by the allow-list before any
+      // upstream call (DEVIN_CONNECT_ACCOUNT_HOST=1 path). The upstream never saw
+      // the request and the account is not sick — this is an operator/config fault,
+      // so it must not charge the error budget that evicts healthy accounts.
+      /* no penalty — request configuration rejected, not an account fault */
+    }
     else if (err.code === 'UNAUTHORIZED') {
       reportError(apiKey);
       // The DEVIN_CONNECT session token is an opaque session_id with no refresh

@@ -52,6 +52,27 @@ const PATH = '/exa.api_server_pb.ApiServerService/GetChatMessage';
 const USER_JWT_PATH = '/exa.auth_pb.AuthService/GetUserJwt';
 const METADATA_USER_JWT_FIELD = 21;
 
+function validatedAccountConnectHost(host) {
+  const refused = () => Object.assign(new Error('ERR_CONNECT_ACCOUNT_HOST_NOT_ALLOWED'), {
+    code: 'ERR_CONNECT_ACCOUNT_HOST_NOT_ALLOWED',
+  });
+  // The URL parser normalizes whitespace and backslashes. Reject those inputs
+  // explicitly, along with an empty/userinfo authority, before using its host.
+  if (typeof host !== 'string' || /[\s\\]/.test(host)) throw refused();
+  let url;
+  try { url = new URL(host); }
+  catch { throw refused(); }
+  // Only the chat origin demonstrated by this tree is authorized to receive
+  // a live session token. Do not infer trust from a suffix or imported URL.
+  // WHATWG normalizes an explicit HTTPS :443 to an empty port.
+  if (url.protocol !== 'https:' || url.hostname !== HOST || url.port !== ''
+      || url.username !== '' || url.password !== '' || host.includes('@')
+      || url.pathname !== '/' || url.search !== '' || url.hash !== '') {
+    throw refused();
+  }
+  return url.hostname;
+}
+
 // ─── Wire capture (RE / vision analysis, gated) ─────────────────────────────
 // When DEVIN_CONNECT_WIRE_DUMP=1, drop the raw upstream GetChatMessage
 // request/response bytes to disk so the exact protobuf (thinking #12, vision,
@@ -2416,10 +2437,9 @@ export async function* streamChat({
   // not be enabled in production — a wrong host will break chat. Default: HOST.
   let effectiveHost = HOST;
   if (host && String(env.DEVIN_CONNECT_ACCOUNT_HOST || '') === '1') {
-    try {
-      const h = /^https?:\/\//i.test(host) ? new URL(host).hostname : String(host).replace(/\/.*$/, '');
-      if (h) effectiveHost = h;
-    } catch { /* keep default */ }
+    // Reject this Connect attempt explicitly; never send its token to an
+    // unapproved origin or silently change account/backend policy here.
+    effectiveHost = validatedAccountConnectHost(host);
   }
 
   const queue = [];
