@@ -20,20 +20,17 @@ function executable(path) {
 }
 
 const trustedGitCandidate = TRUSTED_GIT_CANDIDATES.find(executable);
-if (!trustedGitCandidate) {
-  throw new Error('real-Git fixtures require git at a trusted absolute system path');
-}
-
-export const REAL_GIT = realpathSync(trustedGitCandidate);
+export const REAL_GIT = trustedGitCandidate ? realpathSync(trustedGitCandidate) : null;
+export const SKIP_REASON = 'real-Git fixtures require git at a trusted absolute POSIX system path';
 export const SAFE_TMP_ROOT = existsSync('/tmp') ? '/tmp' : tmpdir();
 const TRUSTED_TOOL_DIRS = [...new Set([
-  dirname(REAL_GIT),
+  REAL_GIT ? dirname(REAL_GIT) : null,
   dirname(process.execPath),
   '/usr/bin',
   '/bin',
   '/usr/sbin',
   '/sbin',
-].filter(existsSync))];
+].filter(path => path && existsSync(path)))];
 const TRUSTED_TOOL_PATH = TRUSTED_TOOL_DIRS.join(delimiter);
 const EMPTY_HOME = '/nonexistent/windsurfapi-fixture-home';
 const SHELL_INJECTION_ENV = [

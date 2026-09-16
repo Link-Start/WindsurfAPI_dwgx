@@ -19,7 +19,7 @@ import {
 } from '../src/dashboard/api.js';
 import { setRuntimeApiKey, setRuntimeDashboardPassword } from '../src/runtime-config.js';
 import {
-  isolateProcessGitEnv, isolatedGitEnv, REAL_GIT, SAFE_TMP_ROOT,
+  isolateProcessGitEnv, isolatedGitEnv, REAL_GIT, SAFE_TMP_ROOT, SKIP_REASON,
 } from './git-fixture-env.js';
 
 function git(cwd, args) {
@@ -37,7 +37,7 @@ function fakeRes() {
   };
 }
 
-it('rollback refuses an untracked path that reset --hard would overwrite, then force mode stashes it', async () => {
+it('rollback refuses an untracked path that reset --hard would overwrite, then force mode stashes it', { skip: REAL_GIT ? false : SKIP_REASON }, async () => {
   const restoreGitEnv = isolateProcessGitEnv();
   const originalCwd = process.cwd();
   const originalPassword = config.dashboardPassword;
@@ -112,7 +112,7 @@ it('rollback refuses an untracked path that reset --hard would overwrite, then f
   }
 });
 
-it('rollback refuses an ignored target collision even with force, without blocking unrelated ignored data', async () => {
+it('rollback refuses an ignored target collision even with force, without blocking unrelated ignored data', { skip: REAL_GIT ? false : SKIP_REASON }, async () => {
   const restoreGitEnv = isolateProcessGitEnv();
   const originalCwd = process.cwd();
   const originalPassword = config.dashboardPassword;

@@ -14,11 +14,14 @@ import {
   writeFileSync,
 } from 'node:fs';
 import { isAbsolute, join, relative, resolve, sep } from 'node:path';
-import { describe, it } from 'node:test';
+import { describe, it as nodeIt } from 'node:test';
 import {
-  isolatedGitEnv, REAL_GIT, SAFE_TMP_ROOT, trustedFixturePath,
+  isolatedGitEnv, REAL_GIT, SAFE_TMP_ROOT, SKIP_REASON, trustedFixturePath,
 } from './git-fixture-env.js';
 
+// Register every integration case even when unavailable; skipping a describe would
+// remove its children from Node's test/skip counts. The source-only check uses nodeIt.
+const it = (name, fn) => nodeIt(name, { skip: REAL_GIT ? false : SKIP_REASON }, fn);
 const ROOT = resolve(process.cwd());
 function git(cwd, args) {
   if (!cwd) throw new Error('git fixture cwd is required');
@@ -159,7 +162,7 @@ function runUpdate(fixture, extraEnv = {}) {
 }
 
 describe('update.sh release target', () => {
-  it('publishes the process pid in /health for OTA service identity checks', () => {
+  nodeIt('publishes the process pid in /health for OTA service identity checks', () => {
     const source = readFileSync(join(ROOT, 'src', 'server.js'), 'utf8');
     assert.match(source, /\bpid:\s*process\.pid\b/);
   });

@@ -32,9 +32,12 @@ import {
 } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import {
-  acquireMutationLock, harnessEnv, materializeMutationWorkspace, workspaceSnapshot,
-} from '../scripts/mutation-harness-utils.mjs';
+import { REAL_GIT, SKIP_REASON } from './git-fixture-env.js';
+
+// The production harness still refuses unavailable Git. Probe before importing it;
+// a module-load exception cannot be represented as a skipped test.
+const { acquireMutationLock, harnessEnv, materializeMutationWorkspace, workspaceSnapshot } =
+  REAL_GIT ? await import('../scripts/mutation-harness-utils.mjs') : {};
 
 const REPO = process.cwd();
 let clone;
@@ -42,6 +45,7 @@ let specDir;
 
 /** A scratch git repo with the harness, a fixture module, and a test over it. */
 before(() => {
+  if (!REAL_GIT) return;
   clone = mkdtempSync(join(tmpdir(), 'mv-harness-'));
   specDir = mkdtempSync(join(tmpdir(), 'mv-spec-'));
   mkdirSync(join(clone, 'scripts'));
@@ -104,7 +108,7 @@ function runHarness(spec, extraArgs = [], envOverrides = null) {
 const strip = (s) => s.replace(/\x1b\[[0-9;]*m/g, '');
 
 describe('a failure from a truncated or load-broken suite is never mutation evidence', () => {
-  it('a syntax-error mutation is UNTRUSTWORTHY, not CAUGHT', () => {
+  it('a syntax-error mutation is UNTRUSTWORTHY, not CAUGHT', { skip: REAL_GIT ? false : SKIP_REASON }, () => {
     // Node reports one file-level failure for this load break, while the baseline
     // contains four tests. A nonzero fail count is not proof that the real guard
     // assertions ran.
@@ -124,7 +128,7 @@ describe('a failure from a truncated or load-broken suite is never mutation evid
     assert.equal(r.code, 2, 'load-broken mutation evidence must be infrastructure failure');
   });
 
-  it('--keep-going cannot continue after untrustworthy evidence', () => {
+  it('--keep-going cannot continue after untrustworthy evidence', { skip: REAL_GIT ? false : SKIP_REASON }, () => {
     const r = runHarness({
       tests: ['test/fixture.test.js'],
       expectBaselinePass: 4,
@@ -151,7 +155,7 @@ describe('a failure from a truncated or load-broken suite is never mutation evid
 });
 
 describe('a truncated run is never reported as a clean survivor', () => {
-  it('a mutation that exits the process mid-suite aborts with an explanation', () => {
+  it('a mutation that exits the process mid-suite aborts with an explanation', { skip: REAL_GIT ? false : SKIP_REASON }, () => {
     // The original defect. Nothing fails, so `fail > 0` is false and the naive verdict is
     // SURVIVED — while most assertions never executed.
     const r = runHarness({
@@ -176,7 +180,7 @@ describe('a truncated run is never reported as a clean survivor', () => {
     assert.equal(r.code, 2, 'harness-cannot-produce-a-verdict is exit 2, not 1');
   });
 
-  it('cannot bless a truncated run through allowTruncatedCatch', () => {
+  it('cannot bless a truncated run through allowTruncatedCatch', { skip: REAL_GIT ? false : SKIP_REASON }, () => {
     const r = runHarness({
       tests: ['test/fixture.test.js'],
       expectBaselinePass: 4,
@@ -194,7 +198,7 @@ describe('a truncated run is never reported as a clean survivor', () => {
     assert.equal(r.code, 2);
   });
 
-  it('cannot forge a complete caught run with test-authored TAP', () => {
+  it('cannot forge a complete caught run with test-authored TAP', { skip: REAL_GIT ? false : SKIP_REASON }, () => {
     // The old human TAP parser accepted these lines as the missing aggregate:
     // a process exit after writing pass/fail/tests made a truncated mutation
     // look like a legitimate CAUGHT result.  The structured reporter never
@@ -218,7 +222,7 @@ describe('a truncated run is never reported as a clean survivor', () => {
 });
 
 describe('the pre-flight guards refuse rather than warn', () => {
-  it('a mutation target outside the repo is refused before anything runs', () => {
+  it('a mutation target outside the repo is refused before anything runs', { skip: REAL_GIT ? false : SKIP_REASON }, () => {
     const r = runHarness({
       tests: ['test/fixture.test.js'],
       expectBaselinePass: 4,
@@ -228,7 +232,7 @@ describe('the pre-flight guards refuse rather than warn', () => {
     assert.equal(r.code, 2);
   });
 
-  it('an untracked target is refused, since the restore could not undo it', () => {
+  it('an untracked target is refused, since the restore could not undo it', { skip: REAL_GIT ? false : SKIP_REASON }, () => {
     // The file must exist and be untracked. It also makes the tree dirty, which guard 1
     // catches FIRST — so assert on either refusal: both are correct, and which one fires is
     // an ordering detail, not the property under test.
@@ -248,7 +252,7 @@ describe('the pre-flight guards refuse rather than warn', () => {
     }
   });
 
-  it('an anchor that does not match exactly once is refused', () => {
+  it('an anchor that does not match exactly once is refused', { skip: REAL_GIT ? false : SKIP_REASON }, () => {
     const r = runHarness({
       tests: ['test/fixture.test.js'],
       expectBaselinePass: 4,
@@ -259,7 +263,7 @@ describe('the pre-flight guards refuse rather than warn', () => {
     assert.equal(r.code, 2);
   });
 
-  it('a stale expectBaselinePass is refused', () => {
+  it('a stale expectBaselinePass is refused', { skip: REAL_GIT ? false : SKIP_REASON }, () => {
     const r = runHarness({
       tests: ['test/fixture.test.js'],
       expectBaselinePass: 999,
@@ -269,7 +273,7 @@ describe('the pre-flight guards refuse rather than warn', () => {
     assert.equal(r.code, 2);
   });
 
-  it('a test path that would be parsed as a node option is refused', () => {
+  it('a test path that would be parsed as a node option is refused', { skip: REAL_GIT ? false : SKIP_REASON }, () => {
     const r = runHarness({
       tests: ['--import=/tmp/evil.mjs'],
       expectBaselinePass: 4,
@@ -281,7 +285,7 @@ describe('the pre-flight guards refuse rather than warn', () => {
 });
 
 describe('an unexpected verdict exits 1, distinct from a harness error', () => {
-  it('a survivor expected to be caught exits 1', () => {
+  it('a survivor expected to be caught exits 1', { skip: REAL_GIT ? false : SKIP_REASON }, () => {
     const r = runHarness({
       tests: ['test/fixture.test.js'],
       expectBaselinePass: 4,
@@ -299,7 +303,7 @@ describe('an unexpected verdict exits 1, distinct from a harness error', () => {
       + 'produce a verdict. CI has to be able to tell those apart.');
   });
 
-  it('and the tree is left clean either way', () => {
+  it('and the tree is left clean either way', { skip: REAL_GIT ? false : SKIP_REASON }, () => {
     const status = execFileSync('git', ['status', '--porcelain'], { cwd: clone, encoding: 'utf8' });
     assert.equal(status.trim(), '',
       `the harness left the scratch repo dirty:\n${status}`);
@@ -333,7 +337,7 @@ describe('the measurement survives a colour-forcing caller', () => {
   });
 
   for (const value of ['3', '1', '']) {
-    it(`FORCE_COLOR=${JSON.stringify(value)} still yields a real baseline and verdict`, () => {
+    it(`FORCE_COLOR=${JSON.stringify(value)} still yields a real baseline and verdict`, { skip: REAL_GIT ? false : SKIP_REASON }, () => {
       const r = runHarness(spec(), [], { FORCE_COLOR: value });
       const out = strip(r.out);
       assert.doesNotMatch(out, /baseline is not green/,
@@ -347,7 +351,7 @@ describe('the measurement survives a colour-forcing caller', () => {
     });
   }
 
-  it('FORCE_COLOR=0 (the one value that does not colour) is unaffected', () => {
+  it('FORCE_COLOR=0 (the one value that does not colour) is unaffected', { skip: REAL_GIT ? false : SKIP_REASON }, () => {
     const r = runHarness(spec(), [], { FORCE_COLOR: '0' });
     const out = strip(r.out);
     assert.match(out, /baseline 4 pass \/ 0 fail/);
@@ -356,7 +360,7 @@ describe('the measurement survives a colour-forcing caller', () => {
 });
 
 describe('the mutation child environment is hermetic', () => {
-  it('does not carry credentials, proxies, auth switches, or real data paths', () => {
+  it('does not carry credentials, proxies, auth switches, or real data paths', { skip: REAL_GIT ? false : SKIP_REASON }, () => {
     const env = harnessEnv({
       API_KEY: 'sentinel-api-key',
       DASHBOARD_PASSWORD: 'sentinel-password',
@@ -394,7 +398,7 @@ describe('the mutation child environment is hermetic', () => {
     assert.equal(env.NO_COLOR, '1');
   });
 
-  it('blocks hard-coded non-loopback fetch before it can become mutation evidence', () => {
+  it('blocks hard-coded non-loopback fetch before it can become mutation evidence', { skip: REAL_GIT ? false : SKIP_REASON }, () => {
     const r = runHarness({
       tests: ['test/fixture.test.js'],
       expectBaselinePass: 4,
@@ -411,7 +415,7 @@ describe('the mutation child environment is hermetic', () => {
     assert.equal(r.code, 2);
   });
 
-  it('discards non-target test side effects instead of leaving them in the Owner checkout', () => {
+  it('discards non-target test side effects instead of leaving them in the Owner checkout', { skip: REAL_GIT ? false : SKIP_REASON }, () => {
     const outside = join(clone, 'non-target-side-effect.txt');
     const r = runHarness({
       tests: ['test/fixture.test.js'],
@@ -427,7 +431,7 @@ describe('the mutation child environment is hermetic', () => {
     assert.equal(existsSync(outside), false, 'the source checkout must remain byte-for-byte untouched');
   });
 
-  it('snapshots every ref namespace and Git pseudoref state', () => {
+  it('snapshots every ref namespace and Git pseudoref state', { skip: REAL_GIT ? false : SKIP_REASON }, () => {
     const gitOut = (...args) => execFileSync('git', args, { cwd: clone, encoding: 'utf8' }).trim();
     const head = gitOut('rev-parse', 'HEAD');
     const originalBlob = gitOut('hash-object', '-w', '--stdin');
@@ -463,7 +467,7 @@ describe('the mutation child environment is hermetic', () => {
     rmSync(emptyRefs, { recursive: true, force: true });
   });
 
-  it('ignores index stat-cache churn but still detects staged index semantics', () => {
+  it('ignores index stat-cache churn but still detects staged index semantics', { skip: REAL_GIT ? false : SKIP_REASON }, () => {
     const gitOut = (...args) => execFileSync('git', args, { cwd: clone, encoding: 'utf8' }).trim();
     const target = join(clone, 'src.mjs');
     const original = readFileSync(target, 'utf8');
@@ -488,7 +492,7 @@ describe('the mutation child environment is hermetic', () => {
     assert.equal(workspaceSnapshot(clone), baseline, 'fixture must return to the exact baseline');
   });
 
-  it('snapshots ignored owner files and executable mode changes', () => {
+  it('snapshots ignored owner files and executable mode changes', { skip: REAL_GIT ? false : SKIP_REASON }, () => {
     const ignored = join(clone, 'ignored-owner.txt');
     writeFileSync(join(clone, '.gitignore'), 'ignored-owner.txt\n');
     writeFileSync(ignored, 'owner bytes\n');
@@ -507,7 +511,7 @@ describe('the mutation child environment is hermetic', () => {
     rmSync(join(clone, '.gitignore'), { force: true });
   });
 
-  it('materializes the network preload but never copies forbidden state trees', () => {
+  it('materializes the network preload but never copies forbidden state trees', { skip: REAL_GIT ? false : SKIP_REASON }, () => {
     const opencode = join(clone, '.opencode');
     const oldWorktree = join(clone, '.claude', 'worktrees', 'old');
     mkdirSync(opencode, { recursive: true });
@@ -533,7 +537,7 @@ describe('the mutation child environment is hermetic', () => {
 });
 
 describe('the mutation harness stale-lock recovery is claim-safe', () => {
-  it('takes the lock in the Owner repo before materializing a clone', () => {
+  it('takes the lock in the Owner repo before materializing a clone', { skip: REAL_GIT ? false : SKIP_REASON }, () => {
     const release = acquireMutationLock(clone);
     try {
       const r = runHarness({
@@ -553,7 +557,7 @@ describe('the mutation harness stale-lock recovery is claim-safe', () => {
     }
   });
 
-  it('refuses a stale lock that already has a competing recovery claim', () => {
+  it('refuses a stale lock that already has a competing recovery claim', { skip: REAL_GIT ? false : SKIP_REASON }, () => {
     const lockDir = join(clone, '.git', 'codex', 'mutation-harness.lock');
     mkdirSync(lockDir, { recursive: true, mode: 0o700 });
     writeFileSync(join(lockDir, 'owner'), '999999999\n', 'utf8');

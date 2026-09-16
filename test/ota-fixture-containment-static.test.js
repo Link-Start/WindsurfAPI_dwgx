@@ -13,7 +13,7 @@ import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { describe, it } from 'node:test';
-import { isolatedGitEnv, REAL_GIT, SAFE_TMP_ROOT } from './git-fixture-env.js';
+import { isolatedGitEnv, REAL_GIT, SAFE_TMP_ROOT, SKIP_REASON } from './git-fixture-env.js';
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const readTest = (name) => readFileSync(join(ROOT, 'test', name), 'utf8');
@@ -88,7 +88,7 @@ function assertEveryPushHasExplicitTemporaryTarget(source, executor, minimum, la
 
 describe('OTA real-Git fixtures fail closed before child-process use', () => {
   it('shared fixture environment removes every inherited GIT_* redirect', () => {
-    assert.match(GIT_ENV, /export const REAL_GIT = realpathSync\(trustedGitCandidate\);/,
+    assert.match(GIT_ENV, /export const REAL_GIT = trustedGitCandidate \? realpathSync\(trustedGitCandidate\) : null;/,
       'fixture Git must be selected through a trusted absolute executable path');
     assert.match(GIT_ENV, /export const SAFE_TMP_ROOT = existsSync\('\/tmp'\) \? '\/tmp' : tmpdir\(\);/,
       'fixture temporary state must live below a controlled temporary root');
@@ -305,7 +305,7 @@ describe('OTA real-Git fixtures fail closed before child-process use', () => {
     assert.match(GIT_ENV, /process\.env\.WINDSURFAPI_SKIP_DOTENV = '1';/);
   });
 
-  it('runtime fixture environments ignore poisoned system and global Git config', () => {
+  it('runtime fixture environments ignore poisoned system and global Git config', { skip: REAL_GIT ? false : SKIP_REASON }, () => {
     const root = mkdtempSync(join(SAFE_TMP_ROOT || tmpdir(), 'wa-fixture-env-sentinel-'));
     try {
       const home = join(root, 'home');

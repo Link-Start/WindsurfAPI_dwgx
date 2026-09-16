@@ -18,7 +18,7 @@ import {
   setSelfUpdateRestartSchedulerForTest,
   setSelfUpdateSupervisorDetectorForTest,
 } from '../src/dashboard/api.js';
-import { isolatedGitEnv, REAL_GIT, SAFE_TMP_ROOT } from './git-fixture-env.js';
+import { isolatedGitEnv, REAL_GIT, SAFE_TMP_ROOT, SKIP_REASON } from './git-fixture-env.js';
 
 // ---------------------------------------------------------------------------
 // Version gate (tag) + rollback endpoint for OTA self-update.
@@ -533,7 +533,7 @@ describe('self-update version gate (tag)', () => {
     assert.equal(gitCalls.some(call => call.startsWith('merge --ff-only ')), false);
   });
 
-  it('uses remote refs as authority after a tag is revoked without deleting the local tag', () => {
+  it('uses remote refs as authority after a tag is revoked without deleting the local tag', { skip: REAL_GIT ? false : SKIP_REASON }, () => {
     const fixture = makeDashboardTagFixture();
     try {
       const beforeRevocation = runDashboardUpdateCheck(fixture);
@@ -555,7 +555,7 @@ describe('self-update version gate (tag)', () => {
     }
   });
 
-  it('rejects incomplete or out-of-root real Git fixtures before spawning the dashboard check', () => {
+  it('rejects incomplete or out-of-root real Git fixtures before spawning the dashboard check', { skip: REAL_GIT ? false : SKIP_REASON }, () => {
     const fixture = makeDashboardTagFixture();
     try {
       assert.throws(() => runDashboardUpdateCheck({ ...fixture, deployment: undefined }),
@@ -569,7 +569,7 @@ describe('self-update version gate (tag)', () => {
     }
   });
 
-  it('rejects dashboard fixture children that are symlinks escaping the temporary root', () => {
+  it('rejects dashboard fixture children that are symlinks escaping the temporary root', { skip: REAL_GIT ? false : SKIP_REASON }, () => {
     const fixture = makeDashboardTagFixture();
     try {
       for (const field of ['origin', 'seed', 'deployment']) {
