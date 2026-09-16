@@ -1,0 +1,85 @@
+{
+  "tests": [
+    "test/wire-h3-reasoning-policy.test.js"
+  ],
+  "expectBaselinePass": 4,
+  "mutations": [
+    {
+      "name": "H3-M1: emit reasoning only on the first raw frame",
+      "file": "src/devin-connect.js",
+      "anchor": "          reasoning: reasoningText,\n          reasoningTagNum,",
+      "replacement": "          reasoning: !preText && tc === msg.tool_calls[0] ? reasoningText : '',\n          reasoningTagNum,",
+      "expectCaught": true
+    },
+    {
+      "name": "H3-M2: omit reasoning from preText",
+      "file": "src/devin-connect.js",
+      "anchor": "        if (reasoningText) parts.push(writeStringField(reasoningTagNum, reasoningText));",
+      "replacement": "        if (false && reasoningText) parts.push(writeStringField(reasoningTagNum, reasoningText));",
+      "expectCaught": true
+    },
+    {
+      "name": "H3-M3: ignore the negative-control tag on native calls",
+      "file": "src/devin-connect.js",
+      "anchor": "  if (reasoning && reasoningTagNum) parts.push(writeStringField(reasoningTagNum, reasoning));",
+      "replacement": "  if (reasoning && reasoningTagNum) parts.push(writeStringField(11, reasoning));",
+      "expectCaught": true
+    },
+    {
+      "name": "H3-M4: enable replay by default",
+      "file": "src/devin-connect.js",
+      "anchor": "  const reasoningTagNum = replayTag === '1' ? 11 : (replayTag === '9' ? 9 : 0);",
+      "replacement": "  const reasoningTagNum = replayTag === '1' ? 11 : (replayTag === '9' ? 9 : 11);",
+      "expectCaught": true
+    },
+    {
+      "name": "H3-M5: reverse native alias precedence",
+      "file": "src/devin-connect.js",
+      "anchor": "      const reasoningText = reasoningTagNum && (msg.reasoning || msg.reasoning_content) ? String(msg.reasoning || msg.reasoning_content) : '';",
+      "replacement": "      const reasoningText = reasoningTagNum && (msg.reasoning_content || msg.reasoning) ? String(msg.reasoning_content || msg.reasoning) : '';",
+      "expectCaught": true
+    },
+    {
+      "name": "H3-M6: use nullish native alias precedence",
+      "file": "src/devin-connect.js",
+      "anchor": "      const reasoningText = reasoningTagNum && (msg.reasoning || msg.reasoning_content) ? String(msg.reasoning || msg.reasoning_content) : '';",
+      "replacement": "      const reasoningText = reasoningTagNum ? String(msg.reasoning ?? msg.reasoning_content ?? '') : '';",
+      "expectCaught": true
+    },
+    {
+      "name": "H3-M7: trim native replay",
+      "file": "src/devin-connect.js",
+      "anchor": "      const reasoningText = reasoningTagNum && (msg.reasoning || msg.reasoning_content) ? String(msg.reasoning || msg.reasoning_content) : '';",
+      "replacement": "      const reasoningText = reasoningTagNum && (msg.reasoning || msg.reasoning_content) ? String(msg.reasoning || msg.reasoning_content).trim() : '';",
+      "expectCaught": true
+    },
+    {
+      "name": "H3-M8: reverse fallback alias precedence",
+      "file": "src/devin-connect.js",
+      "anchor": "    const reasoningText = source === SOURCE.ASSISTANT && reasoningTagNum\n      ? String(msg.reasoning || msg.reasoning_content || '').trim()\n      : '';",
+      "replacement": "    const reasoningText = source === SOURCE.ASSISTANT && reasoningTagNum\n      ? String(msg.reasoning_content || msg.reasoning || '').trim()\n      : '';",
+      "expectCaught": true
+    },
+    {
+      "name": "H3-M9: use nullish fallback alias precedence",
+      "file": "src/devin-connect.js",
+      "anchor": "    const reasoningText = source === SOURCE.ASSISTANT && reasoningTagNum\n      ? String(msg.reasoning || msg.reasoning_content || '').trim()\n      : '';",
+      "replacement": "    const reasoningText = source === SOURCE.ASSISTANT && reasoningTagNum\n      ? String(msg.reasoning ?? msg.reasoning_content ?? '').trim()\n      : '';",
+      "expectCaught": true
+    },
+    {
+      "name": "H3-M10: stop trimming fallback replay",
+      "file": "src/devin-connect.js",
+      "anchor": "    const reasoningText = source === SOURCE.ASSISTANT && reasoningTagNum\n      ? String(msg.reasoning || msg.reasoning_content || '').trim()\n      : '';",
+      "replacement": "    const reasoningText = source === SOURCE.ASSISTANT && reasoningTagNum\n      ? String(msg.reasoning || msg.reasoning_content || '')\n      : '';",
+      "expectCaught": true
+    },
+    {
+      "name": "H3-M11: copy batch reasoning onto later split calls",
+      "file": "src/handlers/tool-emulation.js",
+      "anchor": "            delete singleAssistant.reasoning_content;\n            delete singleAssistant.reasoning;",
+      "replacement": "            // Mutation: retain batch reasoning on later split calls.",
+      "expectCaught": true
+    }
+  ]
+}

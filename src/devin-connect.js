@@ -322,9 +322,12 @@ function encodeAssistantToolCall({ id, name, argsJson, reasoning, reasoningTagNu
     writeVarintField(2, SOURCE.ASSISTANT),  // #2 role=2
     writeMessageField(6, toolCall),         // #6 tool_call submessage
   ];
-  // #11 reasoning text (or custom tag, e.g. #9 for negative control RE probes) —
-  // VERIFIED-FROM-WIRE (req022: every role=2 assistant turn carries #11, 59B–1470B).
-  // Emitted only when a non-empty string is supplied so default wire stays byte-identical.
+  // The req022 note records #11 on its role=2 frames (59B-1470B); it is not a
+  // requirement to emit reasoning when replay is disabled. Nor does that note
+  // establish equal payloads across frames split from one logical turn.
+  // Enabled replay copies the chosen value to preText and every native call
+  // frame (#11 for '1', #9 for '9'). Deduplicating without a paired capture
+  // would replace one unverified replay policy with another.
   // The tag-number guard is load-bearing even though callers currently pass reasoningText
   // only when reasoningTagNum is truthy: field 0 is RESERVED in protobuf and a zero tag
   // would serialize makeTag(0,2) — an invalid frame — so the encoder refuses it itself.
@@ -1104,7 +1107,12 @@ export function buildGetChatMessageRequest({ token, messages, model, sessionId, 
     // history, symmetric with how we decode #6. Gated: only when nativeToolCall
     // is on (else the text-fold path below keeps the emulation wire unchanged).
     if (nativeToolCall && msg.role === 'assistant' && Array.isArray(msg.tool_calls) && msg.tool_calls.length) {
-      // Optional leading assistant text stays on its own role=2 text message.
+      // With enabled, non-empty replay, text plus k calls repeats reasoning k+1
+      // times; without text, k times. This counts calls arriving here, not
+      // the client's original batch: preprocessing may already have split it.
+      // Keep first-truthy alias precedence. Concatenating equal aliases would
+      // duplicate the payload, and changing precedence would rewrite history.
+      // Unlike the fallback branch, native replay retains whitespace verbatim.
       const preText = messageText(msg.content);
       const reasoningText = reasoningTagNum && (msg.reasoning || msg.reasoning_content) ? String(msg.reasoning || msg.reasoning_content) : '';
       if (preText) {
@@ -1152,6 +1160,8 @@ export function buildGetChatMessageRequest({ token, messages, model, sessionId, 
     if (msg.role === 'tool') {
       text = `[tool result${msg.tool_call_id ? ` for ${msg.tool_call_id}` : ''}]: ${text}`;
     }
+    // Alias precedence matches native replay, but retain this branch's trim:
+    // whitespace in the winning alias suppresses emission, not precedence.
     const reasoningText = source === SOURCE.ASSISTANT && reasoningTagNum
       ? String(msg.reasoning || msg.reasoning_content || '').trim()
       : '';
