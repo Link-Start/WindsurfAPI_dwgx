@@ -365,10 +365,18 @@ function installLegacyMarker(dir) {
   }
 }
 
-// A pre-v2 directory is migrated IN PLACE and is never renamed, emptied or
-// removed. The permanent marker is installed BEFORE the dead stamp is deleted, so
-// every partial state (crash, ENOSPC, EIO) leaves either the untouched stamp or
-// [format.json, owner.json] — both retryable, and neither empty.
+// A pre-v2 directory is migrated IN PLACE: this code never renames, removes or
+// vacates it. The permanent marker is installed BEFORE the dead stamp is deleted,
+// so a fault in this code alone (crash, ENOSPC, EIO) leaves either the untouched
+// stamp or [format.json, owner.json] — both retryable, and neither empty.
+//
+// MIXED-VERSION BOUNDARY. A pre-v2 reclaimer running concurrently can unlink the
+// stamp it judged dead at any moment, including after this migrator revalidated
+// it. If the marker install then fails, releasing the guard leaves an ordinary
+// empty pre-v2 directory: this code never adopts one, so later writes read BUSY
+// until an operator removes it. That is the narrow residual of running beside an
+// old writer; it never widens what this code accepts, and with no old reclaimer
+// involved the dead stamp survives such a fault and the retry completes.
 function migrateLegacyDir(lock) {
   const before = readdirSync(lock);
   for (const entry of before) {
@@ -419,9 +427,11 @@ function migrateLegacyDir(lock) {
     catch (error) { if (error.code !== 'ENOENT') throw error; }
     log.warn('credential store lock upgraded in place: a dead pre-v2 stamp was removed');
   } finally {
-    // Safe to release in every path: the marker, the untouched stamp, or the
-    // refusal itself keeps the directory non-empty, so no old writer can take the
-    // path and no later migrator sees an ambiguous empty directory.
+    // The guard is always handed back. In the paths this code drives, the
+    // directory stays non-empty without it (the marker, or the untouched stamp);
+    // if a concurrent pre-v2 reclaimer removed the stamp and the marker install
+    // then failed, this leaves an empty pre-v2 directory, which the next attempt
+    // refuses (BUSY, operator recovery) instead of adopting it.
     releaseInstance(lock, guard);
   }
 }
