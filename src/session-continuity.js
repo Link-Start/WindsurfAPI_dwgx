@@ -364,11 +364,19 @@ function evictState(stateId) {
     if (set) { set.delete(stateId); if (set.size === 0) pairIndex.delete(key); }
     if (commitIndex.get(key) === stateId) commitIndex.delete(key);
   };
+  const state = statesById.get(stateId);
   const owned = ownedIndexKeys.get(stateId);
   if (owned) { for (const key of owned) drop(key); ownedIndexKeys.delete(stateId); }
-  // The root anchor is indexed at creation without going through indexState.
-  const rootKey = statesById.get(stateId)?.rootKey;
-  if (rootKey) drop(rootKey);
+  // Belt and braces for the paths that index a state without going through
+  // indexState: the re-association branch writes the new window's keys directly,
+  // the root anchor is indexed at creation, and commitKey is written besides the
+  // tracked commit keys. Deriving them from the state itself keeps eviction O(own)
+  // without depending on every writer remembering to call ownIndexKey.
+  if (state) {
+    for (const hash of state.pairWindow || []) drop(`${state.scopeId}:${hash}`);
+    if (state.commitKey) drop(state.commitKey);
+    if (state.rootKey) drop(state.rootKey);
+  }
   statesById.delete(stateId);
 }
 
