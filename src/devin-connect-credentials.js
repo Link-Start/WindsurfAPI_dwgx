@@ -199,7 +199,15 @@ function withStoreLock(env, operation) {
     } catch (error) {
       if (error.code !== 'EEXIST') throw error;
       if (!reclaimDeadLock(lock)) throw credentialStoreError('ERR_CRED_STORE_BUSY');
-      claim();                                   // the stale lock is gone; try once
+      // The stale lock is gone; try once. Another writer can still win this race
+      // (mkdir is the only atomic step), and that must read as BUSY like every
+      // other contention, not as a raw EEXIST escaping the store's error shape.
+      try {
+        claim();
+      } catch (retryError) {
+        if (retryError.code === 'EEXIST') throw credentialStoreError('ERR_CRED_STORE_BUSY');
+        throw retryError;
+      }
     }
     return operation({ ...env, DEVIN_CONNECT_CRED_FILE: file });
   } finally {
