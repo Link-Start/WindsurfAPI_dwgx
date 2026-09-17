@@ -133,3 +133,39 @@ test('SEC-2: the field is absent when the caller did not ask for storage', async
   const result = await login({ ...loginArgs({ socket: { remoteAddress: '127.0.0.1' }, headers: {} }), storeCredential: false });
   assert.equal(Object.hasOwn(result, 'credentialStored'), false, 'absence means "not asked", false means "asked and failed"');
 });
+
+test('SEC-2: the flag is false whenever no credential was actually persisted', async () => {
+  const local = req => ({ socket: { remoteAddress: '127.0.0.1' }, headers: {} });
+  const env = { DEVIN_CONNECT_ALLOW_REMOTE_CRED_STORE: '1' };
+
+  // The store is disabled (no DEVIN_CONNECT_CRED_KEY): the save is a no-op, so
+  // reporting "stored" would disarm auto-relogin invisibly (2026-09-17 review, F3).
+  const disabled = boundary(env);
+  disabled.deps.credentials.isCredStoreEnabled = () => false;
+  const disabledResult = await disabled.login(loginArgs(local()));
+  assert.equal(disabledResult.success, true, 'a disabled store must not break the login');
+  assert.equal(disabledResult.credentialStored, false, 'nothing was persisted, so nothing may be reported as stored');
+  assert.equal(disabled.calls.length, 0, 'the store must not even be asked');
+
+  // The gate is closed (remote caller, no opt-in): also nothing was stored.
+  const denied = boundary({ TRUST_PROXY_X_FORWARDED_FOR: '1' });
+  const deniedResult = await denied.login(loginArgs(proxied));
+  assert.equal(deniedResult.success, true);
+  assert.equal(deniedResult.credentialStored, false);
+  assert.equal(denied.calls.length, 0);
+
+  // The caller asked for a one-off login: the storage branch never runs.
+  const oneOff = boundary(env);
+  const oneOffResult = await oneOff.login({ ...loginArgs(local()), autoAdd: false });
+  assert.equal(oneOffResult.success, true);
+  assert.equal(oneOffResult.credentialStored, false, 'an unrequested side effect is not a stored credential');
+  assert.equal(oneOff.calls.length, 0);
+
+  // The store declined without throwing (its own boolean contract).
+  const declined = boundary(env);
+  declined.deps.credentials.storeCredential = (...args) => { declined.calls.push(args); return false; };
+  const declinedResult = await declined.login(loginArgs(local()));
+  assert.equal(declinedResult.success, true);
+  assert.equal(declinedResult.credentialStored, false);
+  assert.equal(declined.calls.length, 1, 'a decline still counts as an attempt');
+});

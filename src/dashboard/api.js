@@ -471,13 +471,18 @@ async function processWindsurfLogin({ email, password, loginProxy, autoAdd, stor
     // break the login that already succeeded. Plaintext password is never
     // logged (only the masked email).
     if (credStoreGateOpen(wantStore, req)) {
-      credentialStored = true;   // assume the store is a no-op unless it says otherwise
+      // True only after a credential was actually persisted. It used to start
+      // true, so a store that is disabled (no DEVIN_CONNECT_CRED_KEY) reported
+      // "stored" without ever calling the store (2026-09-17 review, F3).
+      credentialStored = false;
       try {
         const { storeCredential, isCredStoreEnabled } = await import('../devin-connect-credentials.js');
         if (isCredStoreEnabled()) {
-          credentialStored = storeCredential(email, password) !== false;
+          credentialStored = storeCredential(email, password) === true;
           if (credentialStored) log.info(`Credential stored for auto-relogin: ${maskEmail(email)}`);
           else log.warn(`Credential NOT stored for ${maskEmail(email)} — auto-relogin stays disarmed for this account`);
+        } else {
+          log.warn(`Credential NOT stored for ${maskEmail(email)} — credential storage is disabled (no DEVIN_CONNECT_CRED_KEY); auto-relogin stays disarmed for this account`);
         }
       } catch (e) {
         // A failed save used to be invisible in the response: the user asked for
