@@ -51,7 +51,11 @@ function loadEnv() {
         // terse label: `PORT=3003 # port` is self-explanatory, a 20-char phrase after
         // a credential is exactly the shape that gets missed.
         if (kept && dropped.length > 12) {
-          console.warn(`[config] .env ${key}: inline comment stripped — kept ${JSON.stringify(kept)}, dropped ${JSON.stringify(dropped)}. If the '#' is part of the value, quote it: ${key}="${val}".`);
+          // The operator needs the fix, not the value: printing the kept or dropped
+          // text put a rotated credential into stdout/container logs, which is the
+          // one place a .env edit tends to end up. The hint is what the pinned test
+          // (test/config-dotenv-inline-comment.test.js) actually requires.
+          console.warn(`[config] .env ${key}: inline comment stripped (value omitted). If the '#' is part of the value, quote it: ${key}="…".`);
         }
         val = kept;
       }
