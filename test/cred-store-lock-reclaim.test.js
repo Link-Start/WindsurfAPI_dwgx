@@ -223,6 +223,50 @@ test('a pre-v2 directory replaced before the guard is refused, never adopted', (
   assert.equal(existsSync(env.DEVIN_CONNECT_CRED_FILE), false, 'and nothing may be stored');
 });
 
+test('a replacement directory holding a DIFFERENT stamp is refused, never adopted', (t) => {
+  const { env } = sandbox(t);
+  const stampA = { pid: deadPid(), host: hostname() };
+  const lock = legacyDir(env, stampA);
+  // Sharpening of the case above: the pre-guard read returns the stamp that was
+  // proved dead, and the directory is replaced BEFORE the guard, so the replacement
+  // already carries a stamp of its own by the time the migrator holds the barrier.
+  // That stamp parses and is even dead; only a re-read AFTER the guard can tell it
+  // is not the one this writer proved dead. A reader that trusted the pre-guard
+  // value would migrate a directory that belongs to another writer.
+  let replacement = null;
+  const mod = loadModule({
+    fsOverrides: {
+      readFileSync(name, ...args) {
+        const data = fs.readFileSync(name, ...args);
+        if (replacement === null && String(name) === join(lock, 'owner.json')) {
+          fs.unlinkSync(join(lock, 'owner.json'));
+          fs.rmdirSync(lock);
+          fs.mkdirSync(lock);
+          replacement = { pid: deadPid(), host: hostname() };
+          fs.writeFileSync(join(lock, 'owner.json'), JSON.stringify(replacement));
+        }
+        return data;                                       // the stale bytes the migrator acted on
+      },
+    },
+  });
+  assert.throws(() => mod.storeCredential(EMAIL, 'pw-foreign-stamp', env), (e) => e.code === 'ERR_CRED_STORE_BUSY');
+  assert.deepEqual(readdirSync(lock), ['owner.json'], 'the replacement keeps its stamp: this writer never proved THAT one dead');
+  assert.deepEqual(JSON.parse(readFileSync(join(lock, 'owner.json'), 'utf8')), replacement, 'and the stamp is untouched');
+  assert.equal(existsSync(join(lock, 'format.json')), false, 'no marker may be installed over a directory this writer did not prove dead');
+  assert.equal(existsSync(env.DEVIN_CONNECT_CRED_FILE), false, 'and nothing may be stored');
+});
+
+test('an unreadable stamp inside an already-migrated directory is refused, never deleted', (t) => {
+  const { env } = sandbox(t);
+  const lock = legacyDir(env, 'not-json{{{');
+  writeFileSync(join(lock, 'format.json'), JSON.stringify({ v: 2 }));
+  // Marker present, stamp present but unparseable: absence of a READABLE stamp is
+  // not evidence of death, so the only safe move is to leave the evidence alone.
+  assert.throws(() => cred.storeCredential(EMAIL, 'pw-unreadable', env), (e) => e.code === 'ERR_CRED_STORE_BUSY');
+  assert.deepEqual(readdirSync(lock).sort(), ['format.json', 'owner.json'], 'the unreadable stamp must survive');
+  assert.equal(existsSync(env.DEVIN_CONNECT_CRED_FILE), false, 'and nothing may be stored');
+});
+
 test('a failed marker install keeps the dead-owner evidence and the retry succeeds', (t) => {
   const { env } = sandbox(t);
   const lock = legacyDir(env, { pid: deadPid(), host: hostname() });
