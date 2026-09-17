@@ -1,0 +1,140 @@
+// WHY THIS FILE EXISTS. "The default path emits the same bytes" is this project's
+// first invariant — the upstream is a stateful validator, so a stray byte in a
+// request frame is a rejected session, not a style question. Until now that
+// invariant was only checked by an author-run script living outside the repo, so a
+// pull request could change the encoder, pass every test, and be merged.
+//
+// This test makes the invariant mechanical: it builds complete request frames
+// through the current tree and through a PRE-CHANGE tree, over a fixed matrix of
+// histories x prepare routes x native/emulated x env switches, and requires the
+// bytes to be identical. Any PR that alters default-path output fails here.
+//
+// The comparison base is the last released tag (CI exports WIRE_BASE_TREE after
+// materialising it; locally a `.claude/worktrees/wire-base` checkout works). When
+// neither exists the test SKIPS with a reason instead of passing quietly — a gate
+// that cannot run must never look green.
+import assert from 'node:assert/strict';
+import crypto from 'node:crypto';
+import { existsSync } from 'node:fs';
+import { syncBuiltinESMExports } from 'node:module';
+import { join, resolve } from 'node:path';
+import { fileURLToPath, pathToFileURL } from 'node:url';
+import { test } from 'node:test';
+
+const ROOT = resolve(fileURLToPath(import.meta.url), '..', '..');
+const EXPECTED_COMPARISONS = 270;
+
+function findBaseTree() {
+  const candidates = [
+    process.env.WIRE_BASE_TREE,
+    join(ROOT, '.claude', 'worktrees', 'wire-base'),
+  ].filter(Boolean);
+  for (const candidate of candidates) {
+    const root = resolve(candidate);
+    if (existsSync(join(root, 'src', 'devin-connect.js')) && existsSync(join(root, 'src', 'handlers', 'tool-emulation.js'))) {
+      return root;
+    }
+  }
+  return null;
+}
+
+const BASE = findBaseTree();
+const SKIP = 'no pre-change tree to compare against — set WIRE_BASE_TREE to a checkout of the last release';
+// CI sets this: there the comparison base is always materialised, so a missing
+// one is a broken gate and must fail loudly instead of skipping green.
+if (!BASE && process.env.WIRE_BASE_REQUIRED === '1') {
+  throw new Error(`${SKIP} (WIRE_BASE_REQUIRED=1)`);
+}
+
+async function load(root) {
+  const file = name => pathToFileURL(resolve(root, 'src', name)).href;
+  return {
+    wire: await import(file('devin-connect.js')),
+    tools: await import(file('handlers/tool-emulation.js')),
+  };
+}
+
+const U = { role: 'user', content: 'continue' };
+const tc = id => ({ id, type: 'function', function: { name: 'f', arguments: '{}' } });
+const A = id => ({ role: 'assistant', content: null, tool_calls: [tc(id)] });
+const T = id => ({ role: 'tool', tool_call_id: id, content: `result-${id}` });
+const PNG = 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==';
+const image = { type: 'image_url', image_url: { url: `data:image/png;base64,${PNG}` } };
+const batch = (text = 'before') => [
+  { role: 'assistant', content: text, reasoning: 'R', reasoning_content: 'A', tool_calls: [tc('a'), tc('b')] },
+  T('a'), T('b'), U,
+];
+
+// The same nine histories the author's offline harness uses. They are chosen to
+// cover the shapes that changed in recent releases (empty assistant turns, image
+// turns, call/result ordering, reasoning replay) rather than to be exhaustive.
+const HISTORIES = [
+  [U],
+  [{ role: 'assistant', content: '' }, U],
+  [{ role: 'assistant', content: null, reasoning: 'R' }, U],
+  [{ role: 'assistant', content: [image] }, U],
+  [{ role: 'assistant', content: 'before' },
+    { role: 'assistant', content: [image, { type: 'text', text: 'caption' }] }, U],
+  [T('a'), A('a'), U],
+  [T('missing'), U],
+  batch(),
+  batch(''),
+];
+const ROUTES = ['raw', 'direct', 'normalize', 'strip', 'emulation'];
+const ENVS = [
+  {},
+  { DEVIN_CONNECT_REPLAY_REASONING: '0' },
+  { DEVIN_CONNECT_REPLAY_REASONING: '0', DEVIN_CONNECT_IMAGE_TAG: '0' },
+];
+
+function prepare(api, input, route) {
+  const messages = structuredClone(input);
+  if (route === 'raw') return messages;
+  if (route === 'direct') return api.tools.interleaveParallelToolMessages(messages);
+  return api.tools.normalizeMessagesForCascade(messages, [], {
+    modelKey: 'swe-1-7', route: 'devin_connect', injectUserPreamble: false,
+    nativeStructured: route !== 'emulation',
+    ...(route === 'strip' ? { stripOrphans: true } : {}),
+  });
+}
+
+function build(api, messages, env = {}, nativeToolCall = true) {
+  const originalUUID = crypto.randomUUID;
+  let n = 0;
+  // Deterministic ids: two unrestricted calls mint different UUIDs, and comparing
+  // them would either fail for the wrong reason or force both trees to be patched
+  // in ways that hide a real byte change.
+  crypto.randomUUID = () => `00000000-0000-4000-8000-${String(++n).padStart(12, '0')}`;
+  syncBuiltinESMExports();
+  try {
+    return api.wire.buildGetChatMessageRequest({
+      token: 'offline-only', model: 'swe-1-7', messages, env, nativeToolCall,
+      deviceSeed: 'wire-device', sessionId: 'wire-session',
+      sessionModelConfig: { id: 'wire-config', turn: 1 },
+    });
+  } finally {
+    crypto.randomUUID = originalUUID;
+    syncBuiltinESMExports();
+  }
+}
+
+test('the default path emits the same complete request bytes as the last release', { skip: BASE ? false : SKIP }, async () => {
+  const current = await load(ROOT);
+  const previous = await load(BASE);
+  let compared = 0;
+  for (const [index, history] of HISTORIES.entries()) {
+    for (const route of ROUTES) {
+      for (const native of [false, true]) {
+        for (const env of ENVS) {
+          const before = build(previous, prepare(previous, history, route), env, native);
+          const after = build(current, prepare(current, history, route), env, native);
+          assert.deepEqual(after, before,
+            `fixture=${index} route=${route} native=${native} env=${JSON.stringify(env)}: request bytes changed`);
+          compared++;
+        }
+      }
+    }
+  }
+  // A shrunken matrix must not read as a pass.
+  assert.equal(compared, EXPECTED_COMPARISONS, 'the comparison matrix changed size; update the expectation deliberately');
+});

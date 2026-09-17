@@ -123,6 +123,32 @@ jobs:
       - name: Secret scan (includes test/ — half of a typical diff lives there)
         run: node scripts/secret-scan.mjs
 
+  wire-identity:
+    name: Default-path request bytes
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          # The comparison base is a tag, so the tags have to be here.
+          fetch-depth: 0
+
+      - name: Setup Node 24
+        uses: actions/setup-node@v5
+        with:
+          node-version: '24'
+
+      - name: Materialise the last release as the comparison base
+        run: |
+          BASE_TAG=$(git describe --tags --abbrev=0)
+          echo "comparing against $BASE_TAG"
+          git worktree add --detach "$RUNNER_TEMP/wire-base" "$BASE_TAG"
+          echo "WIRE_BASE_TREE=$RUNNER_TEMP/wire-base" >> "$GITHUB_ENV"
+          echo "WIRE_BASE_REQUIRED=1" >> "$GITHUB_ENV"
+
+      - name: Same bytes as the last release, or this fails
+        run: node --import ./test/setup-env.mjs --test test/wire-byte-identity.test.js
+
   test:
     name: Unit tests shard ${{ matrix.shard }}
     runs-on: ubuntu-latest
