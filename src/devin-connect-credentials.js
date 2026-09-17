@@ -24,10 +24,10 @@
  *   { "v": 1, "records": { "<email-lower>": { salt, iv, tag, ct } } }   (all hex)
  */
 
-import { readFileSync, writeFileSync, renameSync, mkdirSync, rmdirSync, openSync, closeSync, unlinkSync, realpathSync, readdirSync, statSync, existsSync } from 'fs';
+import { readFileSync, writeFileSync, renameSync, mkdirSync, rmdirSync, openSync, closeSync, unlinkSync, realpathSync, readdirSync, statSync, existsSync, linkSync } from 'fs';
 import { join, dirname, basename, resolve } from 'path';
 import { createCipheriv, createDecipheriv, scryptSync, randomBytes, randomUUID } from 'crypto';
-import { hostname, uptime } from 'os';
+import { hostname } from 'os';
 import { config, log } from './config.js';
 import { bumpConnect, __registerCredHealth } from './devin-connect-metrics.js';
 
@@ -141,6 +141,7 @@ const _saveInFlight = new Set();
 // file → the claim INSTANCE this process holds. The instance, not the path, is
 // the lock, so a release can only give back the exact claim that was taken.
 const _heldClaims = new Map();
+const NO_IGNORED = new Set();
 
 function credentialStoreError(code) {
   const error = new Error(code);
@@ -157,67 +158,75 @@ function canonicalCredFile(env) {
   return join(realpathSync(dirname(file)), basename(file));
 }
 
-// ─── The store lock: claims are INSTANCES, never a path ─────────────────────
+// ─── The store lock: a permanent sentinel plus unique claim INSTANCES ───────
 //
-//   <store>.lock/                             coordination directory, kept forever
-//     format.json                             {"v":2} — this directory is ours
-//     claim-<host>-<pid>-<boot>-<token>/      one immutable claim per writer
-//     owner.json                              pre-v2 stamp (legacy, read-only)
+//   <store>.lock            permanent sentinel at the fixed pre-v2 path:
+//                             • a regular file — a fresh store
+//                             • a directory holding format.json — a migrated one
+//   <store>.lock.claims/    retained coordination directory
+//     claim-<host>-<pid>-<token>/     one immutable claim per writer
 //
-// WHY. The old layout kept a single owner.json at a fixed path and reclaimed it
-// by re-reading that path, so two reclaimers could both judge the same dead
-// owner and the slower one then deleted whatever occupied the path by then —
-// including the lock a new writer had just taken (2026-09-17 review, P1). Here
-// the identity IS the directory name, so a reclaim can only ever delete the
-// exact instance whose writer it proved dead. Reclaim and release both name an
-// instance, never a shared path, so "read once more before unlink" is not needed
-// and the TOCTOU cannot come back.
+// WHY THE SENTINEL IS A FILE FOR A FRESH STORE. <store>.lock used to be a
+// directory that had to be created and then stamped, so a failure between those
+// two steps (crash, ENOSPC) left a lock nothing could read and every later save
+// was fenced forever (2026-09-17 review, P2). The sentinel is now published by
+// hard-linking a fully prepared file: the path is either absent or complete, and
+// there is no window in which a created-but-uninitialized lock exists. A pre-v2
+// writer cannot take the path either — its mkdir fails on an existing path, and
+// its release rmdir cannot remove a file — so after the first new-format writer
+// no pre-v2 writer can hold this lock again (its own reclaim then finds no
+// owner.json and refuses).
 //
-// Nothing is written inside a claim, so mkdir publishes the whole identity in
-// one atomic step: a writer killed at any instruction leaves either no claim or
-// a complete, self-describing one. That is also why a partial write can no
-// longer fence the store (2026-09-17 review, P2): there is no stamp to tear.
+// WHY A PRE-V2 DIRECTORY IS KEPT, NEVER RENAMED AND NEVER EMPTIED. An old-version
+// reclaimer may still be running: it reads the stamp, judges the owner dead,
+// pauses, then deletes by PATH. If this code renamed or removed that directory —
+// or left it empty — the paused reclaimer would delete whatever replaced it,
+// which is exactly the P1 this change removes. So the directory stays at its path
+// forever: the migrator first holds a uniquely named guard INSIDE it (an old
+// reclaimer's rmdir then fails with ENOTEMPTY even after it unlinks the stamp)
+// and only ever installs a permanent format.json inside it. A directory without
+// that marker is refused however old it looks: a paused pre-v2 writer between its
+// mkdir and its stamp is indistinguishable from a leftover, and elapsed time is
+// not proof of death.
 //
-// Mutually exclusive because the container is read AFTER this writer's claim is
-// created. Two writers can both be past their read only if each missed the
-// other's claim, which requires the second claim to be created after the first
-// read — but then the second read is later still and sees the first claim. A
-// live claim is never removed, so the loser reads BUSY.
+// CLAIMS ARE INSTANCES. The identity IS the directory name (host, pid, random
+// token), so a reclaim can only delete the exact instance whose writer it proved
+// dead by ESRCH on this host; claim and release both name an instance rather than
+// a shared path. The claims directory is read AFTER this writer's claim exists:
+// two writers can both be past their read only if each missed the other's claim,
+// which requires the second claim to be created after the first read — but then
+// the second read is later still and sees the first claim. A live claim is never
+// removed, so the loser reads BUSY.
 //
-// LIMITS, stated rather than implied. Death is only provable for a same-host,
-// same-boot pid (ESRCH) or for a claim older than this boot; a recycled pid that
-// is now some unrelated live process therefore reads as BUSY, and a foreign host
-// always does. A pre-v2 (owner.json) holder is refused unless its pid is provably
-// dead. Worker threads share a pid, so a claim is held per process, not per
-// thread. Finally this trusts the platform's readdir/mkdir visibility, i.e. a
-// local filesystem, the same assumption the old mkdir-based lock already made.
+// LIMITS, stated rather than implied: only ESRCH on this host proves a pid is
+// gone, so a recycled pid — and any foreign host — stays conservatively BUSY until
+// an operator removes that instance; worker threads share a pid, so a claim is per
+// process, not per thread; a pre-v2 directory left empty by a crash between mkdir
+// and stamp is an explicitly irrecoverable legacy boundary (refused, operator
+// action required); and this trusts local-filesystem readdir/mkdir/link
+// visibility, the same assumption the old mkdir-based lock already made.
 const LOCK_FORMAT = 2;
-const CLAIM_PREFIX = 'claim-';
+const LOCK_MARKER = JSON.stringify({ v: LOCK_FORMAT });
 const FORMAT_FILE = 'format.json';
 const LEGACY_OWNER_FILE = 'owner.json';
-const FORMAT_MARKER = JSON.stringify({ v: LOCK_FORMAT });
+const CLAIM_PREFIX = 'claim-';
 const CLAIM_ATTEMPTS = 3;
-// A directory with no marker may belong to a pre-v2 writer that is still between
-// its mkdir and its stamp, so one is adopted only once it has been untouched for
-// this long. Nothing sleeps on it — the next save finds it settled.
-const LEGACY_SETTLE_MS = 2000;
-// A claim older than this machine's current boot cannot belong to a running
-// process, which is what stops a reboot + recycled pid from fencing the store
-// forever. The slack absorbs clock granularity; the comparison only ever proves
-// death, never life, and it is only applied to this host's own claims.
-const BOOT_SLACK_SECONDS = 5;
 
 // Hex, not the raw name: it survives any hostname character and compares exactly.
 function hostTag(host = hostname()) {
   return Buffer.from(String(host), 'utf8').toString('hex');
 }
 
-function lockDir(file) {
+function sentinelPath(file) {
   return `${file}.lock`;
 }
 
+function claimsPath(file) {
+  return `${file}.lock.claims`;
+}
+
 function claimName(token = randomUUID().replace(/-/g, '')) {
-  return `${CLAIM_PREFIX}${hostTag()}-${process.pid}-${Math.max(0, Math.floor(uptime()))}-${token}`;
+  return `${CLAIM_PREFIX}${hostTag()}-${process.pid}-${token}`;
 }
 
 // Anything this module did not create parses to null, and callers must treat
@@ -225,21 +234,19 @@ function claimName(token = randomUUID().replace(/-/g, '')) {
 function parseClaim(name) {
   if (typeof name !== 'string' || !name.startsWith(CLAIM_PREFIX)) return null;
   const parts = name.slice(CLAIM_PREFIX.length).split('-');
-  if (parts.length !== 4) return null;
-  const [host, pid, boot, token] = parts;
+  if (parts.length !== 3) return null;
+  const [host, pid, token] = parts;
   if (!/^[0-9a-f]{2,512}$/.test(host)) return null;
   if (!/^[1-9][0-9]{0,9}$/.test(pid)) return null;
-  if (!/^[0-9]{1,12}$/.test(boot)) return null;
   if (!/^[0-9a-f]{16,64}$/.test(token)) return null;
-  return { host, pid: Number(pid), boot: Number(boot), token, name };
+  return { host, pid: Number(pid), token, name };
 }
 
 // 'dead' = this host provably cannot be running that writer any more. 'live' and
-// 'unknown' both fence the store; 'unknown' covers another host, an EPERM we
-// cannot interpret, and our own clock disagreeing with the claim.
+// 'unknown' both fence the store; 'unknown' is another host, or an errno that
+// proves nothing (EPERM), or a pid this process is not allowed to check.
 function claimState(claim) {
   if (claim.host !== hostTag()) return 'unknown';
-  if (Math.floor(uptime()) + BOOT_SLACK_SECONDS < claim.boot) return 'dead';
   try {
     process.kill(claim.pid, 0);
     return 'live';
@@ -248,18 +255,50 @@ function claimState(claim) {
   }
 }
 
-// Remove one claim INSTANCE. The name is the identity, so this can only delete
-// the exact instance the caller proved dead. Never recursive: a claim is a leaf.
-function removeClaim(dir, name) {
+// Remove one claim INSTANCE: the name is the identity, so this can only delete the
+// exact instance the caller proved dead. An instance is a leaf — a directory, or
+// the staging file of a claim that was published but never completed.
+function removeInstance(dir, name) {
   const target = join(dir, name);
+  let info;
+  try { info = statSync(target); } catch { return true; }          // already gone
+  if (info.isFile()) {
+    try { unlinkSync(target); return true; } catch { return false; }
+  }
+  if (!info.isDirectory()) return false;
   let entries;
-  try { entries = readdirSync(target, { withFileTypes: true }); }
-  catch { return true; }                              // already gone
+  try { entries = readdirSync(target, { withFileTypes: true }); } catch { return false; }
   for (const entry of entries) {
     if (!entry.isFile()) return false;
     try { unlinkSync(join(target, entry.name)); } catch { return false; }
   }
   try { rmdirSync(target); return true; } catch { return false; }
+}
+
+// Read a coordination directory and clean up only what is provably dead. Returns
+// the first entry that blocks this writer, or null. `ignored` names members the
+// caller already understands (the sentinel's own files).
+function sweepInstances(dir, ownName, ignored) {
+  let blocker = null;
+  for (const entry of readdirSync(dir)) {
+    if (entry === ownName || ignored.has(entry)) continue;
+    const instance = parseClaim(entry);
+    if (!instance || claimState(instance) !== 'dead') { if (!blocker) blocker = entry; continue; }
+    if (removeInstance(dir, entry)) log.warn(`credential store lock reclaimed from a dead writer (pid ${instance.pid})`);
+    else log.warn(`credential store: dead lock instance ${entry} could not be removed; it fences nothing`);
+  }
+  return blocker;
+}
+
+function releaseInstance(dir, name) {
+  try { rmdirSync(join(dir, name)); return true; }
+  catch (error) {
+    if (error.code === 'ENOENT') return true;                     // already gone, nothing to give back
+    // A completed rename remains committed; a surviving claim instance fences
+    // later writes exactly as long as this process can still publish.
+    log.error(`credential store lock release failed (${error.code || 'UNKNOWN'}); writes remain fenced`);
+    return false;
+  }
 }
 
 function markerState(dir) {
@@ -272,8 +311,8 @@ function markerState(dir) {
 
 // Pre-v2 stamp: the only legacy ownership this code understands. Its pid is
 // checkable on this host; anything unreadable, foreign or malformed is 'unknown'
-// and is refused instead of stolen. No age rule, no boot rule: a paused pre-v2
-// writer can still resume and publish, so only the OS may call it dead.
+// and is refused instead of stolen. Never an age rule: a paused pre-v2 writer can
+// still resume and publish, so only the OS may call it dead.
 function legacyOwnerState(dir) {
   let owner;
   try { owner = JSON.parse(readFileSync(join(dir, LEGACY_OWNER_FILE), 'utf8')); }
@@ -288,97 +327,113 @@ function legacyOwnerState(dir) {
   }
 }
 
-// Publish the marker through a rename so a torn marker can never exist: a
-// half-written one would be indistinguishable from a foreign directory and would
-// fence the store for good.
-function writeFormatMarker(dir) {
-  const tmp = join(dir, `.format.${process.pid}.${randomUUID().slice(0, 8)}.tmp`);
+// Publish the fresh-store sentinel ATOMICALLY: the marker is fully prepared inside
+// the claims directory and then hard-linked to the sentinel path, so that path is
+// either absent or complete. EEXIST means somebody else published first (or a
+// pre-v2 directory appeared) and the caller re-reads; every other failure leaves
+// the sentinel path untouched and is reported as itself.
+function publishSentinel(lock, claims) {
+  const staged = join(claims, claimName());
   try {
-    writeFileSync(tmp, FORMAT_MARKER, { mode: 0o600, flag: 'wx' });
-    renameSync(tmp, join(dir, FORMAT_FILE));
+    writeFileSync(staged, LOCK_MARKER, { mode: 0o600, flag: 'wx' });
+    try { linkSync(staged, lock); }
+    catch (error) { if (error.code !== 'EEXIST') throw error; }
+  } finally {
+    try { unlinkSync(staged); } catch { /* best effort */ }
+  }
+}
+
+// Install the permanent marker INSIDE a pre-v2 directory. It is staged under a
+// claim-shaped name first, so a writer that dies mid-install is reclaimed as a
+// provably dead instance instead of becoming an unreadable artifact; the rename
+// then makes it visible. From this moment rmdir on the directory always fails.
+function installLegacyMarker(dir) {
+  const staged = join(dir, claimName());
+  try {
+    writeFileSync(staged, LOCK_MARKER, { mode: 0o600, flag: 'wx' });
+    renameSync(staged, join(dir, FORMAT_FILE));
   } catch (error) {
-    try { unlinkSync(tmp); } catch { /* best effort */ }
+    try { unlinkSync(staged); } catch { /* best effort */ }
     throw error;
   }
 }
 
-// Bring the coordination directory to a state a claim can be created in, or
-// refuse. Everything this code cannot prove dead is a refusal: a live or foreign
-// writer, a damaged marker, an unknown artifact — and a pre-v2 directory is
-// adopted only when its stamp is provably dead or when it has settled empty.
-function openContainer(dir, attempt = 0) {
-  let created = false;
-  try { mkdirSync(dir, { mode: 0o700 }); created = true; }
-  catch (error) { if (error.code !== 'EEXIST') throw error; }
-  if (created) {
-    try { writeFormatMarker(dir); }
-    catch (error) {
-      // A container without its marker is ambiguous to every later writer, and
-      // it is empty and ours — hand it back instead of fencing the store. The
-      // original error (ENOSPC/EACCES/...), not BUSY, reaches the caller.
-      try { rmdirSync(dir); } catch { /* an operator can still remove it */ }
-      throw error;
+// A pre-v2 directory is migrated IN PLACE, holding a guard inside it first so that
+// directory instance cannot be replaced under this writer. Everything this code
+// cannot prove is refused; only a stamp whose pid is provably dead is dropped.
+function migrateLegacyDir(lock) {
+  const before = readdirSync(lock);
+  for (const entry of before) {
+    if (entry === LEGACY_OWNER_FILE || entry === FORMAT_FILE || parseClaim(entry)) continue;
+    throw credentialStoreBusy();
+  }
+  if (before.length === 0) {
+    // A pre-v2 writer between its mkdir and its stamp looks exactly like this, and
+    // how long it paused cannot be observed. Refuse — an operator decides.
+    throw credentialStoreBusy();
+  }
+  const marker = markerState(lock);
+  if (marker === 'broken') throw credentialStoreBusy();
+  if (marker === 'ok') {
+    // Already migrated. A pre-v2 stamp can still be sitting here only if a paused
+    // pre-v2 writer is about to publish: prove it dead or refuse, never ignore it.
+    if (existsSync(join(lock, LEGACY_OWNER_FILE))) {
+      if (legacyOwnerState(lock) !== 'dead') throw credentialStoreBusy();
+      try { unlinkSync(join(lock, LEGACY_OWNER_FILE)); }
+      catch (error) { if (error.code !== 'ENOENT') throw error; }
     }
+    // Only litter from a crashed migrator may remain; anything else is refused.
+    if (sweepInstances(lock, null, new Set([FORMAT_FILE]))) throw credentialStoreBusy();
     return;
   }
-  let info = null;
-  try { info = statSync(dir); } catch (error) { if (error.code !== 'ENOENT') throw error; }
-  if (info === null) {
-    if (attempt >= 1) throw credentialStoreBusy();
-    return openContainer(dir, attempt + 1);      // a pre-v2 holder released it between the calls
-  }
-  if (!info.isDirectory()) throw credentialStoreBusy();
-  const marker = markerState(dir);
-  if (marker === 'broken') throw credentialStoreBusy();
-  if (marker === 'ok') return;
-  const entries = readdirSync(dir);
-  for (const entry of entries) {
-    if (entry !== LEGACY_OWNER_FILE) throw credentialStoreBusy();
-  }
-  if (entries.length === 0) {
-    // Old writers left this behind (crash between mkdir and stamp) or a v2
-    // bootstrap died before its marker landed: a settled empty directory is
-    // adopted, a fresh one may still be initializing and is refused.
-    if (Date.now() - info.mtimeMs < LEGACY_SETTLE_MS) throw credentialStoreBusy();
-  } else {
-    if (legacyOwnerState(dir) !== 'dead') throw credentialStoreBusy();
-    try { unlinkSync(join(dir, LEGACY_OWNER_FILE)); }
+  const guard = claimName();
+  mkdirSync(join(lock, guard), { mode: 0o700 });
+  try {
+    if (sweepInstances(lock, guard, new Set([LEGACY_OWNER_FILE]))) throw credentialStoreBusy();
+    const stamp = existsSync(join(lock, LEGACY_OWNER_FILE)) ? legacyOwnerState(lock) : 'dead';
+    if (stamp !== 'dead') throw credentialStoreBusy();
+    try { unlinkSync(join(lock, LEGACY_OWNER_FILE)); }
     catch (error) { if (error.code !== 'ENOENT') throw error; }
-    log.warn('credential store lock upgraded: removed the stamp of a dead pre-v2 writer');
+    installLegacyMarker(lock);
+    log.warn('credential store lock upgraded in place: a dead pre-v2 stamp was removed');
+  } finally {
+    // A guard that survived would make the directory refuse every later writer.
+    releaseInstance(lock, guard);
   }
-  writeFormatMarker(dir);
 }
 
-// Read the container AFTER this writer's claim was created — that read is what
-// makes the claim exclusive (see the block comment above). Provably dead
-// instances are cleaned up here; everything else is reported as the blocker.
-function sweepClaims(dir, ownName) {
-  let blocker = null;
-  for (const entry of readdirSync(dir)) {
-    if (entry === FORMAT_FILE || entry === ownName) continue;
-    if (entry === LEGACY_OWNER_FILE) {
-      if (legacyOwnerState(dir) !== 'dead') { if (!blocker) blocker = entry; continue; }
-      // A dead pre-v2 stamp occupies nothing. It can only be litter here: a
-      // pre-v2 writer's own mkdir would have failed on an existing directory.
-      try { unlinkSync(join(dir, entry)); } catch { /* the next writer retries */ }
-      continue;
-    }
-    const claim = parseClaim(entry);
-    if (!claim) { if (!blocker) blocker = entry; continue; }   // not ours: never touched
-    if (claimState(claim) !== 'dead') { if (!blocker) blocker = entry; continue; }
-    if (removeClaim(dir, entry)) log.warn(`credential store lock reclaimed from a dead writer (pid ${claim.pid})`);
-    else log.warn(`credential store: dead claim ${entry} could not be removed; it does not fence writes`);
-  }
-  return blocker;
+function ensureClaimsDir(claims) {
+  try { mkdirSync(claims, { mode: 0o700 }); }
+  catch (error) { if (error.code !== 'EEXIST') throw error; }
+  if (!statSync(claims).isDirectory()) throw credentialStoreBusy();
 }
 
+// Occupy the store's fixed sentinel path with something a pre-v2 writer can
+// neither create nor delete, or refuse. Everything unknown is a refusal.
+function openSentinel(lock, claims) {
+  for (let attempt = 0; attempt < 3; attempt++) {
+    let info = null;
+    try { info = statSync(lock); } catch (error) { if (error.code !== 'ENOENT') throw error; }
+    if (info === null) { publishSentinel(lock, claims); continue; }
+    if (info.isDirectory()) { migrateLegacyDir(lock); return; }
+    if (!info.isFile()) throw credentialStoreBusy();
+    let raw;
+    try { raw = readFileSync(lock, 'utf8'); } catch { throw credentialStoreBusy(); }
+    try { if (JSON.parse(raw)?.v === LOCK_FORMAT) return; } catch { /* not a marker this code wrote */ }
+    throw credentialStoreBusy();
+  }
+  throw credentialStoreBusy();                  // the path never settled: fail closed
+}
+
+// Take the store lock: publish this writer's claim instance, then read the claims
+// directory to find out whether anybody else is live. Contention reads as BUSY —
+// the caller must not write, and no live claim is ever touched.
 function acquireClaim(file) {
-  const dir = lockDir(file);
-  openContainer(dir);
+  const claims = claimsPath(file);
   let name = null;
   for (let tries = 0; tries < CLAIM_ATTEMPTS && !name; tries++) {
     const candidate = claimName();
-    try { mkdirSync(join(dir, candidate), { mode: 0o700 }); name = candidate; }
+    try { mkdirSync(join(claims, candidate), { mode: 0o700 }); name = candidate; }
     catch (error) {
       // Only a token collision is expected to be EEXIST; anything else (ENOSPC
       // included) created nothing, so it is reported as itself, not as BUSY.
@@ -386,46 +441,35 @@ function acquireClaim(file) {
     }
   }
   if (!name) throw credentialStoreBusy();
-  const claim = { dir, name, path: join(dir, name) };
-  const blocker = sweepClaims(dir, name);
+  const claim = { dir: claims, name, path: join(claims, name) };
+  let blocker;
+  try {
+    blocker = sweepInstances(claims, name, NO_IGNORED);   // the read AFTER the claim is the exclusion
+  } catch (error) {
+    // A failed read must not leak this writer's own instance: it would fence every
+    // later call from this process until it exits.
+    releaseInstance(claims, name);
+    throw error;
+  }
   if (blocker) {
-    releaseClaim(claim);
+    releaseInstance(claims, name);
     log.warn(`credential store lock held elsewhere (${blocker}); refusing to write`);
     throw credentialStoreBusy();
   }
   return claim;
 }
 
-function releaseClaim(claim) {
-  try { rmdirSync(claim.path); return true; }
-  catch (error) {
-    if (error.code === 'ENOENT') return true;         // already gone, nothing to give back
-    // A completed rename remains committed; the surviving claim instance fences
-    // later writes exactly as long as this process can still publish.
-    log.error(`credential store lock release failed (${error.code || 'UNKNOWN'}); writes remain fenced`);
-    return false;
-  }
-}
-
-// Last check before publishing. Two things must hold: this writer still holds
-// its own claim INSTANCE, and no live/unknown occupant shares the container.
-// The read below is the serialisation point — of two writers that both reach it,
-// the later one sees the earlier one's claim (a live writer never gives its claim
-// up) and refuses, so the two cannot both publish. Provably dead instances are
-// ignored: they cannot publish anything.
+// Last check before publishing. This writer must still hold its own claim INSTANCE
+// and no live/unknown occupant may share the claims directory. That read is the
+// serialisation point: of two writers that both reach it, the later one sees the
+// earlier one's claim (a live writer never gives its claim up) and refuses, so
+// they cannot both publish. Provably dead instances are ignored — they cannot
+// publish anything.
 function assertExclusive(file) {
   const claim = _heldClaims.get(file);
   if (!claim) throw credentialStoreError('ERR_CRED_STORE_UNLOCKED');
   if (!existsSync(claim.path)) throw credentialStoreBusy();
-  for (const entry of readdirSync(claim.dir)) {
-    if (entry === FORMAT_FILE || entry === claim.name) continue;
-    if (entry === LEGACY_OWNER_FILE) {
-      if (legacyOwnerState(claim.dir) !== 'dead') throw credentialStoreBusy();
-      continue;
-    }
-    const other = parseClaim(entry);
-    if (!other || claimState(other) !== 'dead') throw credentialStoreBusy();
-  }
+  if (sweepInstances(claim.dir, claim.name, NO_IGNORED)) throw credentialStoreBusy();
 }
 
 function withStoreLock(env, operation) {
@@ -434,13 +478,16 @@ function withStoreLock(env, operation) {
   _saveInFlight.add(file);
   let claim = null;
   try {
+    const claims = claimsPath(file);
+    ensureClaimsDir(claims);
+    openSentinel(sentinelPath(file), claims);
     claim = acquireClaim(file);
     _heldClaims.set(file, claim);
     return operation({ ...env, DEVIN_CONNECT_CRED_FILE: file });
   } finally {
     if (claim) {
       _heldClaims.delete(file);
-      releaseClaim(claim);
+      releaseInstance(claim.dir, claim.name);
     }
     _saveInFlight.delete(file);
   }
@@ -518,6 +565,9 @@ function writeStore(store, env = process.env) {
     writeFileSync(fd, JSON.stringify(store, null, 2));
     closeSync(fd);
     fd = undefined;
+    // The temp file is written; re-check ownership right before the rename that
+    // publishes it. A claim lost during the write must refuse here, not publish.
+    assertExclusive(file);
     renameSync(tmp, file);
     published = true;
   } finally {
@@ -658,7 +708,7 @@ export function listCredentialEmails(env = process.env) {
   return Object.keys(readStore(env).records);
 }
 
-export const __testing = { credFilePath, deriveKey, normalizeEmail, tryRepairJson, salvageRecordsByRegex, isValidRecord, readStore, assertRecordSetPreserved, lockDir, claimName, parseClaim, claimState, removeClaim, legacyOwnerState, markerState, openContainer, acquireClaim, releaseClaim, sweepClaims };
+export const __testing = { credFilePath, deriveKey, normalizeEmail, tryRepairJson, salvageRecordsByRegex, isValidRecord, readStore, assertRecordSetPreserved, sentinelPath, claimsPath, claimName, parseClaim, claimState, removeInstance, legacyOwnerState, markerState, migrateLegacyDir, openSentinel, acquireClaim, releaseInstance, sweepInstances };
 
 // Surface decrypt health through the central connect-metrics endpoint without a
 // static import cycle (metrics → credentials → config → ...). Registered at

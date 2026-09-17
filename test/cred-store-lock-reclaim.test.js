@@ -1,47 +1,41 @@
 // WHY THIS FILE EXISTS. The credential store serialises writers through a lock
-// directory, and the lock's identity is an INSTANCE, never a path:
+// whose identity is an INSTANCE, never a path:
 //
-//   <store>.lock/                          coordination directory, kept forever
-//     format.json                          {"v":2} — this directory is ours
-//     claim-<host>-<pid>-<boot>-<token>/   one immutable claim per writer
-//     owner.json                           pre-v2 stamp (read-only here)
+//   <store>.lock            permanent sentinel at the fixed pre-v2 path
+//                             • a regular file holding {"v":2} — a fresh store
+//                             • a pre-v2 directory that now holds format.json
+//   <store>.lock.claims/    retained coordination directory
+//     claim-<host>-<pid>-<token>/     one immutable claim per writer
 //
-// The first lock carried one owner.json at the fixed path and reclaimed it by
-// re-reading that path. Two reclaimers could judge the same dead owner, and the
-// slower one then deleted whatever occupied the path by then — including a live
-// writer's brand-new lock (2026-09-17 review, P1). And because the stamp was a
-// second, separate write, a writer that died between mkdir and the stamp left an
-// unreadable lock that fenced every later save forever (P2). Both halves are
-// asserted here, because "reclaim" without the refusal half would silently steal
-// locks from live writers.
+// The first lock was a single owner.json at a fixed path, reclaimed by re-reading
+// that path: two reclaimers could judge the same dead owner, and the slower one
+// then deleted whatever occupied the path by then — including a live writer's
+// brand-new lock (2026-09-17 review, P1). Its identity was also a second write, so
+// a partial owner write (ENOSPC) left an unreadable stamp that fenced every later
+// save forever (P2).
 //
-// The reclaim interleavings are driven by executing the real module text with
-// only its boundary imports and the process liveness probe substituted (the same
-// technique test/sec1-credential-persistence.test.js uses for fs). Everything the
-// interleaving depends on — the claim name, the container read, the publish
-// fence — is the production code, not a re-implementation.
+// Every interleaving below is driven by executing the real module text with only
+// its boundary imports and the process liveness probe substituted (the same
+// technique test/sec1-credential-persistence.test.js uses for fs). The claim name,
+// the sentinel gate, the claims sweep and the publish fences are production code.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { spawn, spawnSync } from 'node:child_process';
 import * as fs from 'node:fs';
-import { writeFileSync, mkdirSync, mkdtempSync, rmSync, existsSync, readFileSync, readdirSync, realpathSync, utimesSync } from 'node:fs';
+import { writeFileSync, mkdirSync, mkdtempSync, rmSync, existsSync, readFileSync, readdirSync, realpathSync, statSync, utimesSync } from 'node:fs';
 import * as path from 'node:path';
 import * as crypto from 'node:crypto';
-import { tmpdir, hostname, uptime } from 'node:os';
+import { tmpdir, hostname } from 'node:os';
 import { join, resolve } from 'node:path';
-import { pathToFileURL, fileURLToPath } from 'node:url';
-// The credential store is imported below on purpose: the module reads its env
-// per call, so no import-time state matters, but keeping the dynamic import
-// documents that this suite is about that module and not about auth.js.
+import { pathToFileURL } from 'node:url';
 const cred = await import('../src/devin-connect-credentials.js');
 const SOURCE = readFileSync(new URL('../src/devin-connect-credentials.js', import.meta.url), 'utf8');
 const MODULE_URL = pathToFileURL(resolve('src/devin-connect-credentials.js')).href;
 const KEY = 'fixture-master-key-for-lock-reclaim';
 const EMAIL = 'lock-probe@example.test';
-// Same encoding the module uses, so a claim name this file builds by hand is the
-// one the module would have built.
+// Same encoding the module uses, so a name this file builds by hand is the one
+// the module would have built.
 const HOST_TAG = Buffer.from(hostname(), 'utf8').toString('hex');
-const BOOT = Math.floor(uptime());
 
 function sandbox(t) {
   const dir = realpathSync(mkdtempSync(join(tmpdir(), 'cred-lock-')));
@@ -56,17 +50,10 @@ function deadPid() {
   return child.pid;
 }
 
-function claimDir(env) { return `${env.DEVIN_CONNECT_CRED_FILE}.lock`; }
-
-function claimNames(env) {
-  const dir = claimDir(env);
-  if (!existsSync(dir)) return [];
-  return readdirSync(dir).filter(entry => entry.startsWith('claim-'));
-}
-
-function claimNamed(pid, boot = BOOT, token = 'a'.repeat(32)) {
-  return `claim-${HOST_TAG}-${pid}-${boot}-${token}`;
-}
+const sentinel = env => `${env.DEVIN_CONNECT_CRED_FILE}.lock`;
+const claimsDir = env => `${env.DEVIN_CONNECT_CRED_FILE}.lock.claims`;
+const instances = env => (existsSync(claimsDir(env)) ? readdirSync(claimsDir(env)) : []);
+const claimNamed = (pid, token = 'a'.repeat(32), host = HOST_TAG) => `claim-${host}-${pid}-${token}`;
 
 // Execute the real module text with only its boundary imports substituted. Sync
 // fs hooks must stay sync; returning promises would test a different API.
@@ -75,7 +62,7 @@ function loadModule({ fsOverrides = {}, kill } = {}) {
     fs: { ...fs, ...fsOverrides },
     path,
     crypto,
-    os: { hostname, uptime },
+    os: { hostname },
     './config.js': { config: {}, log: { info() {}, warn() {}, error() {} } },
     './devin-connect-metrics.js': { bumpConnect() {}, __registerCredHealth() {} },
   };
@@ -91,161 +78,186 @@ function loadModule({ fsOverrides = {}, kill } = {}) {
   });
 }
 
-// ─── Pre-v2 locks: refused unless provably dead ────────────────────────────
-
-test('a lock left by a dead pre-v2 writer is reclaimed and the write proceeds', (t) => {
-  const { env } = sandbox(t);
-  const lock = claimDir(env);
+function legacyDir(env, stamp) {
+  const lock = sentinel(env);
   mkdirSync(lock, { recursive: true });
-  writeFileSync(join(lock, 'owner.json'), JSON.stringify({ pid: deadPid(), host: hostname() }));
+  if (stamp !== undefined) writeFileSync(join(lock, 'owner.json'), typeof stamp === 'string' ? stamp : JSON.stringify(stamp));
+  return lock;
+}
 
-  assert.equal(cred.storeCredential(EMAIL, 'pw-dead-owner', env), true, 'the dead owner must not fence the write');
-  assert.equal(existsSync(join(lock, 'owner.json')), false, 'the dead pre-v2 stamp must be gone');
-  assert.equal(existsSync(join(lock, 'format.json')), true, 'and the directory must now advertise its format');
-  assert.deepEqual(claimNames(env), [], 'no claim instance may survive the write');
-  assert.equal(cred.getCredential(EMAIL, env), 'pw-dead-owner');
+// ─── The sentinel path ─────────────────────────────────────────────────────
+
+test('a fresh store publishes a file sentinel a pre-v2 release cannot remove', (t) => {
+  const { env } = sandbox(t);
+  assert.equal(cred.storeCredential(EMAIL, 'pw-fresh', env), true);
+  assert.equal(statSync(sentinel(env)).isFile(), true, 'the sentinel must be a regular file, never a directory');
+  assert.deepEqual(JSON.parse(readFileSync(sentinel(env), 'utf8')), { v: 2 });
+  assert.deepEqual(instances(env), [], 'no claim instance may survive the write');
+  // A pre-v2 release released its lock with unlink(owner.json) + rmdir(lock): the
+  // sentinel is a file, so that rmdir can never take the path away.
+  assert.throws(() => fs.rmdirSync(sentinel(env)), 'rmdir on the sentinel must fail');
+  // Repeated writes reuse the same sentinel and leave the claims directory empty.
+  for (let i = 0; i < 4; i++) assert.equal(cred.storeCredential(`repeat-${i}@example.test`, `pw-${i}`, env), true);
+  assert.equal(statSync(sentinel(env)).isFile(), true);
+  assert.deepEqual(instances(env), []);
+  assert.equal(cred.listCredentialEmails(env).length, 5);
 });
 
-test('a pre-v2 owner that is alive still refuses, and its stamp is left alone', (t) => {
+test('a sentinel file this code did not write is refused, never overwritten', (t) => {
   const { env } = sandbox(t);
-  const lock = claimDir(env);
-  const stamp = { pid: process.pid, host: hostname() };
-  mkdirSync(lock, { recursive: true });
-  writeFileSync(join(lock, 'owner.json'), JSON.stringify(stamp));
+  writeFileSync(sentinel(env), 'not a marker\n');
+  assert.throws(() => cred.storeCredential(EMAIL, 'pw-unknown-file', env), (e) => e.code === 'ERR_CRED_STORE_BUSY');
+  assert.equal(readFileSync(sentinel(env), 'utf8'), 'not a marker\n');
+  writeFileSync(sentinel(env), JSON.stringify({ v: 99 }));
+  assert.throws(() => cred.storeCredential(EMAIL, 'pw-other-format', env), (e) => e.code === 'ERR_CRED_STORE_BUSY');
+});
 
+// ─── Pre-v2 directories: migrated in place, or refused ─────────────────────
+
+test('a dead pre-v2 stamp is migrated in place and the write proceeds', (t) => {
+  const { env } = sandbox(t);
+  const lock = legacyDir(env, { pid: deadPid(), host: hostname() });
+  assert.equal(cred.storeCredential(EMAIL, 'pw-dead-owner', env), true);
+  assert.equal(existsSync(join(lock, 'owner.json')), false, 'the dead stamp must be gone');
+  assert.deepEqual(JSON.parse(readFileSync(join(lock, 'format.json'), 'utf8')), { v: 2 });
+  assert.deepEqual(readdirSync(lock), ['format.json'], 'the directory keeps its permanent marker and nothing else');
+  assert.equal(cred.getCredential(EMAIL, env), 'pw-dead-owner');
+  // The migrated directory can never be removed by a pre-v2 release path.
+  assert.throws(() => fs.rmdirSync(lock), (e) => e.code === 'ENOTEMPTY');
+});
+
+test('a pre-v2 owner that is alive still refuses, and nothing is written into its directory', (t) => {
+  const { env } = sandbox(t);
+  const lock = legacyDir(env, { pid: process.pid, host: hostname() });
   assert.throws(() => cred.storeCredential(EMAIL, 'pw-live-owner', env),
     (e) => e.code === 'ERR_CRED_STORE_BUSY', 'a live owner must still be respected');
-  assert.deepEqual(JSON.parse(readFileSync(join(lock, 'owner.json'), 'utf8')), stamp);
-  assert.equal(existsSync(join(lock, 'format.json')), false, 'a refusal must not rewrite the directory either');
+  assert.deepEqual(readdirSync(lock), ['owner.json'], 'a refusal must not add or remove anything');
+  assert.equal(existsSync(join(lock, 'format.json')), false);
 });
 
-test('a pre-v2 owner from another host is never reclaimed here', (t) => {
+test('a pre-v2 owner from another host is never migrated here', (t) => {
   const { env } = sandbox(t);
-  const lock = claimDir(env);
-  mkdirSync(lock, { recursive: true });
-  writeFileSync(join(lock, 'owner.json'), JSON.stringify({ pid: 999999, host: 'some-other-host' }));
-
+  const lock = legacyDir(env, { pid: 999999, host: 'some-other-host' });
   assert.throws(() => cred.storeCredential(EMAIL, 'pw-foreign', env),
     (e) => e.code === 'ERR_CRED_STORE_BUSY', 'liveness of a foreign host cannot be checked from here');
-  assert.equal(JSON.parse(readFileSync(join(lock, 'owner.json'), 'utf8')).host, 'some-other-host');
+  assert.deepEqual(readdirSync(lock), ['owner.json']);
 });
 
 test('an unreadable pre-v2 stamp is refused, never stolen', (t) => {
   const { env } = sandbox(t);
-  const lock = claimDir(env);
-  mkdirSync(lock, { recursive: true });
-  writeFileSync(join(lock, 'owner.json'), '{"pid": 1234, "host": "fixture');
-
+  const lock = legacyDir(env, '{"pid": 1234, "host": "fixture');
   assert.throws(() => cred.storeCredential(EMAIL, 'pw-torn', env), (e) => e.code === 'ERR_CRED_STORE_BUSY');
-  assert.equal(readFileSync(join(lock, 'owner.json'), 'utf8'), '{"pid": 1234, "host": "fixture',
-    'an unprovable stamp must stay exactly as it was found');
+  assert.deepEqual(readdirSync(lock), ['owner.json']);
+  assert.equal(readFileSync(join(lock, 'owner.json'), 'utf8'), '{"pid": 1234, "host": "fixture');
 });
 
-test('a fresh marker-less directory is refused; a settled one is adopted', (t) => {
+test('an unknown artifact in a pre-v2 directory refuses the write and is left alone', (t) => {
   const { env } = sandbox(t);
-  const lock = claimDir(env);
-  mkdirSync(lock, { recursive: true });
-  // A pre-v2 writer sits between its mkdir and its stamp: nothing may enter.
-  assert.throws(() => cred.storeCredential(EMAIL, 'pw-fresh-empty', env), (e) => e.code === 'ERR_CRED_STORE_BUSY');
-  assert.deepEqual(readdirSync(lock), [], 'the fresh directory must not gain a claim');
-  // The same directory, untouched for longer than the settle window, is a
-  // leftover from a writer that will never come back.
-  const settled = Date.now() / 1000 - 30;
-  utimesSync(lock, settled, settled);
-  assert.equal(cred.storeCredential(EMAIL, 'pw-settled-empty', env), true);
-  assert.equal(cred.getCredential(EMAIL, env), 'pw-settled-empty');
+  const lock = legacyDir(env, { pid: deadPid(), host: hostname() });
+  writeFileSync(join(lock, 'mystery'), 'x');
+  assert.throws(() => cred.storeCredential(EMAIL, 'pw-mystery', env), (e) => e.code === 'ERR_CRED_STORE_BUSY');
+  assert.deepEqual(readdirSync(lock).sort(), ['mystery', 'owner.json']);
 });
 
-// ─── Claim instances: never deleted, always fenced ─────────────────────────
-
-test('a dead claim instance is reclaimed and a live one in the same container is untouched', (t) => {
+test('an empty pre-v2 directory is never adopted, however old it looks', (t) => {
   const { env } = sandbox(t);
-  const lock = claimDir(env);
-  mkdirSync(lock, { recursive: true });
+  const lock = legacyDir(env, undefined);
+  // A pre-v2 writer between its mkdir and its owner write is indistinguishable
+  // from a leftover, and how long it paused cannot be observed. Age is not proof.
+  utimesSync(lock, new Date(0), new Date(0));
+  assert.throws(() => cred.storeCredential(EMAIL, 'pw-aged', env), (e) => e.code === 'ERR_CRED_STORE_BUSY');
+  assert.deepEqual(readdirSync(lock), [], 'the untouched directory must stay empty');
+  assert.throws(() => cred.storeCredential(EMAIL, 'pw-aged-again', env), (e) => e.code === 'ERR_CRED_STORE_BUSY');
+});
+
+test('a migrated directory cleans a crashed migrator but respects a live one', (t) => {
+  const { env } = sandbox(t);
+  const lock = legacyDir(env, { pid: deadPid(), host: hostname() });
   writeFileSync(join(lock, 'format.json'), JSON.stringify({ v: 2 }));
-  mkdirSync(join(lock, claimNamed(deadPid())));
-  mkdirSync(join(lock, claimNamed(process.pid, BOOT, 'b'.repeat(32))));
+  mkdirSync(join(lock, claimNamed(deadPid(), 'b'.repeat(32))));
+  assert.equal(cred.storeCredential(EMAIL, 'pw-after-crash', env), true, 'a dead guard must not fence the store');
+  assert.deepEqual(readdirSync(lock), ['format.json']);
 
+  mkdirSync(join(lock, claimNamed(process.pid, 'c'.repeat(32))));
+  assert.throws(() => cred.storeCredential(EMAIL, 'pw-live-guard', env), (e) => e.code === 'ERR_CRED_STORE_BUSY');
+  assert.deepEqual(readdirSync(lock).sort(), [claimNamed(process.pid, 'c'.repeat(32)), 'format.json'].sort(),
+    'a live instance must never be removed');
+});
+
+test('a torn marker staged by a crashed migrator is reclaimed, not treated as an artifact', (t) => {
+  const { env } = sandbox(t);
+  const lock = legacyDir(env, { pid: deadPid(), host: hostname() });
+  // The migrator died between staging the marker and renaming it into place.
+  writeFileSync(join(lock, claimNamed(deadPid(), 'd'.repeat(32))), '{"v":2');
+  assert.equal(cred.storeCredential(EMAIL, 'pw-torn-marker', env), true);
+  assert.deepEqual(readdirSync(lock), ['format.json']);
+});
+
+// ─── Claim instances ───────────────────────────────────────────────────────
+
+test('a dead claim instance is reclaimed and a live one in the same directory is untouched', (t) => {
+  const { env } = sandbox(t);
+  cred.storeCredential(EMAIL, 'pw-seed', env);
+  mkdirSync(join(claimsDir(env), claimNamed(deadPid())));
+  const live = claimNamed(process.pid, 'b'.repeat(32));
+  mkdirSync(join(claimsDir(env), live));
   assert.throws(() => cred.storeCredential(EMAIL, 'pw-both', env), (e) => e.code === 'ERR_CRED_STORE_BUSY');
-  assert.deepEqual(claimNames(env), [claimNamed(process.pid, BOOT, 'b'.repeat(32))],
-    'the dead instance is gone, the live instance is exactly where it was');
-  assert.equal(existsSync(lock), true, 'a reclaim must never remove the shared container');
+  assert.deepEqual(instances(env), [live], 'the dead instance is gone, the live instance is exactly where it was');
 });
 
-test('a claim from before this boot is reclaimed even though its pid looks alive', (t) => {
+test('a foreign-host claim and an unknown artifact in the claims directory both refuse', (t) => {
   const { env } = sandbox(t);
-  const lock = claimDir(env);
-  mkdirSync(lock, { recursive: true });
-  writeFileSync(join(lock, 'format.json'), JSON.stringify({ v: 2 }));
-  // Same host, this process's own (live) pid, but a boot stamp that can only
-  // belong to a machine that has since restarted: the pid was recycled.
-  mkdirSync(join(lock, claimNamed(process.pid, BOOT + 3600)));
-
-  assert.equal(cred.storeCredential(EMAIL, 'pw-pre-boot', env), true, 'a pre-boot claim cannot be a live writer');
-  assert.deepEqual(claimNames(env), []);
-  assert.equal(cred.getCredential(EMAIL, env), 'pw-pre-boot');
-});
-
-test('a live claim instance is never removed, whatever else the container holds', (t) => {
-  const { env } = sandbox(t);
-  const lock = claimDir(env);
-  mkdirSync(lock, { recursive: true });
-  writeFileSync(join(lock, 'format.json'), JSON.stringify({ v: 2 }));
-  const live = claimNamed(process.pid);
-  mkdirSync(join(lock, live));
-
-  assert.throws(() => cred.storeCredential(EMAIL, 'pw-live-claim', env), (e) => e.code === 'ERR_CRED_STORE_BUSY');
-  assert.equal(existsSync(join(lock, live)), true);
-});
-
-test('a foreign-host claim and an unknown artifact both refuse, and are left alone', (t) => {
-  const { env } = sandbox(t);
-  const lock = claimDir(env);
-  mkdirSync(lock, { recursive: true });
-  writeFileSync(join(lock, 'format.json'), JSON.stringify({ v: 2 }));
-  const foreign = `claim-${Buffer.from('other-host', 'utf8').toString('hex')}-4242-7-${'c'.repeat(32)}`;
-  mkdirSync(join(lock, foreign));
-  mkdirSync(join(lock, 'mystery-artifact'));
-
+  cred.storeCredential(EMAIL, 'pw-seed', env);
+  const foreign = `claim-${Buffer.from('other-host', 'utf8').toString('hex')}-4242-${'c'.repeat(32)}`;
+  mkdirSync(join(claimsDir(env), foreign));
+  mkdirSync(join(claimsDir(env), 'mystery-artifact'));
   assert.throws(() => cred.storeCredential(EMAIL, 'pw-unknown', env), (e) => e.code === 'ERR_CRED_STORE_BUSY');
-  assert.equal(existsSync(join(lock, foreign)), true);
-  assert.equal(existsSync(join(lock, 'mystery-artifact')), true);
+  assert.deepEqual(instances(env).sort(), ['mystery-artifact', foreign].sort());
 });
+
+test('a dead claim whose initialization failed halfway is still reclaimed', (t) => {
+  const { env } = sandbox(t);
+  cred.storeCredential(EMAIL, 'pw-seed', env);
+  const dead = claimNamed(deadPid());
+  mkdirSync(join(claimsDir(env), dead));
+  writeFileSync(join(claimsDir(env), dead, 'leftover'), '{');
+  assert.equal(cred.storeCredential(EMAIL, 'pw-torn-instance', env), true);
+  assert.deepEqual(instances(env), []);
+});
+
+// ─── The F1 interleaving and the publish fences ────────────────────────────
 
 test('a stale reclaimer must not delete the claim a new writer just took', (t) => {
   const { env } = sandbox(t);
-  const lock = claimDir(env);
   const gone = deadPid();
   const dead = claimNamed(gone);
-  const stolen = claimNamed(process.pid, BOOT, 'd'.repeat(32));
-  mkdirSync(lock, { recursive: true });
-  writeFileSync(join(lock, 'format.json'), JSON.stringify({ v: 2 }));
-  mkdirSync(join(lock, dead));
+  const stolen = claimNamed(process.pid, 'd'.repeat(32));
+  cred.storeCredential(EMAIL, 'pw-seed', env);
+  mkdirSync(join(claimsDir(env), dead));
 
   // The interleaving the old lock lost to: during the liveness probe of the dead
   // instance, that instance is already gone and a NEW writer's claim occupies the
-  // container. Deleting by path takes the new claim; deleting by identity does not.
+  // directory. Deleting by path takes the new claim; deleting by identity does not.
   let switched = false;
   const mod = loadModule({
     kill(pid, signal) {
       assert.equal(signal, 0);
       if (pid === gone && !switched) {
         switched = true;
-        fs.rmdirSync(join(lock, dead));
-        fs.mkdirSync(join(lock, stolen));
+        fs.rmdirSync(join(claimsDir(env), dead));
+        fs.mkdirSync(join(claimsDir(env), stolen));
       }
       return process.kill(pid, signal);
     },
   });
   assert.throws(() => mod.storeCredential(EMAIL, 'pw-stale-reclaimer', env), (e) => e.code === 'ERR_CRED_STORE_BUSY');
   assert.equal(switched, true, 'the probe must have been reached');
-  assert.equal(existsSync(join(lock, stolen)), true, 'the new writer\'s claim must survive a stale reclaim');
-  assert.equal(existsSync(env.DEVIN_CONNECT_CRED_FILE), false, 'and no snapshot may be published past it');
+  assert.equal(existsSync(join(claimsDir(env), stolen)), true, 'the new writer\'s claim must survive a stale reclaim');
+  assert.equal(cred.getCredential(EMAIL, env), 'pw-seed', 'and the stored record must be the one from before, not a stale snapshot');
 });
 
-test('a writer that lost its claim instance refuses instead of publishing', (t) => {
+test('a writer that lost its claim while reading refuses instead of publishing', (t) => {
   const { env } = sandbox(t);
-  const lock = claimDir(env);
   let dropped = false;
   const mod = loadModule({
     fsOverrides: {
@@ -253,8 +265,8 @@ test('a writer that lost its claim instance refuses instead of publishing', (t) 
         // The snapshot read happens while the claim is held: drop the instance
         // then, exactly as a foreign cleaner would.
         if (!dropped && String(name) === env.DEVIN_CONNECT_CRED_FILE) {
-          for (const entry of readdirSync(lock)) {
-            if (entry.startsWith('claim-')) { fs.rmdirSync(join(lock, entry)); dropped = true; }
+          for (const entry of readdirSync(claimsDir(env))) {
+            if (entry.startsWith('claim-')) { fs.rmdirSync(join(claimsDir(env), entry)); dropped = true; }
           }
         }
         return fs.readFileSync(name, ...args);
@@ -266,16 +278,42 @@ test('a writer that lost its claim instance refuses instead of publishing', (t) 
   assert.equal(existsSync(env.DEVIN_CONNECT_CRED_FILE), false, 'a lost claim must not publish a stale snapshot');
 });
 
-// ─── Initialization failure leaves nothing behind (P2) ─────────────────────
+test('a writer that lost its claim during the temp write must not rename it into place', (t) => {
+  const { dir, env } = sandbox(t);
+  assert.equal(cred.storeCredential(EMAIL, 'pw-first', env), true);
+  const before = readFileSync(env.DEVIN_CONNECT_CRED_FILE);
+  let dropped = false;
+  const mod = loadModule({
+    fsOverrides: {
+      writeFileSync(target, ...args) {
+        // The store content is written through a file descriptor; the claim is
+        // still held at that moment.
+        if (!dropped && typeof target === 'number') {
+          for (const entry of readdirSync(claimsDir(env))) {
+            if (entry.startsWith('claim-')) { fs.rmdirSync(join(claimsDir(env), entry)); dropped = true; }
+          }
+        }
+        return fs.writeFileSync(target, ...args);
+      },
+    },
+  });
+  assert.throws(() => mod.storeCredential(EMAIL, 'pw-second', env), (e) => e.code === 'ERR_CRED_STORE_BUSY');
+  assert.equal(dropped, true);
+  assert.deepEqual(readFileSync(env.DEVIN_CONNECT_CRED_FILE), before, 'the published store must not change');
+  assert.equal(existsSync(env.DEVIN_CONNECT_CRED_FILE + '.tmp'), false);
+  assert.equal(readdirSync(dir).filter(name => name.includes('.tmp')).length, 0, 'no temp file may survive the refusal');
+});
 
-test('a failed container bootstrap reports the original error and fences nothing', (t) => {
+// ─── Failure injection: nothing fences, the original error survives ────────
+
+test('a failed sentinel publication reports the original error and fences nothing', (t) => {
   const { env } = sandbox(t);
-  const lock = claimDir(env);
+  const claims = claimsDir(env);
   let inject = true;
   const mod = loadModule({
     fsOverrides: {
       writeFileSync(name, ...args) {
-        if (inject && String(name).includes('.format.')) {
+        if (inject && typeof name === 'string' && String(name).startsWith(claims)) {
           throw Object.assign(new Error('no space left on device'), { code: 'ENOSPC' });
         }
         return fs.writeFileSync(name, ...args);
@@ -284,8 +322,8 @@ test('a failed container bootstrap reports the original error and fences nothing
   });
   assert.throws(() => mod.storeCredential(EMAIL, 'pw-enospc', env), (e) => e.code === 'ENOSPC',
     'the caller must see the real failure, not BUSY');
-  assert.equal(existsSync(lock), false, 'an unmarkerable container must be handed back, not left to fence the store');
-  assert.equal(existsSync(env.DEVIN_CONNECT_CRED_FILE), false);
+  assert.equal(existsSync(sentinel(env)), false, 'the sentinel path must stay absent');
+  assert.deepEqual(instances(env), [], 'and no staged file may be left behind');
 
   inject = false;                                  // the fault clears
   assert.equal(mod.storeCredential(EMAIL, 'pw-enospc', env), true, 'the next save must succeed');
@@ -294,7 +332,6 @@ test('a failed container bootstrap reports the original error and fences nothing
 
 test('a claim that could not be created reports the original error and fences nothing', (t) => {
   const { env } = sandbox(t);
-  const lock = claimDir(env);
   let inject = true;
   const mod = loadModule({
     fsOverrides: {
@@ -307,27 +344,33 @@ test('a claim that could not be created reports the original error and fences no
     },
   });
   assert.throws(() => mod.storeCredential(EMAIL, 'pw-enospc-claim', env), (e) => e.code === 'ENOSPC');
-  assert.deepEqual(readdirSync(lock), ['format.json'], 'a failed claim creates nothing to reclaim');
-
   inject = false;
   assert.equal(mod.storeCredential(EMAIL, 'pw-enospc-claim', env), true);
-  assert.deepEqual(claimNames(env), [], 'the retry must not leak its claim either');
+  assert.deepEqual(instances(env), [], 'the retry must not leak its claim either');
 });
 
-test('a dead claim that failed halfway is still reclaimed', (t) => {
+test('a failed read after the claim is taken releases it and preserves the error', (t) => {
   const { env } = sandbox(t);
-  const lock = claimDir(env);
-  mkdirSync(lock, { recursive: true });
-  writeFileSync(join(lock, 'format.json'), JSON.stringify({ v: 2 }));
-  const dead = claimNamed(deadPid());
-  mkdirSync(join(lock, dead));
-  // A torn artifact inside a dead instance must not make it look foreign: the
-  // instance name is the identity, so the whole instance is reclaimable litter.
-  writeFileSync(join(lock, dead, 'owner.json'), '{');
+  const claims = claimsDir(env);
+  let inject = true;
+  const mod = loadModule({
+    fsOverrides: {
+      readdirSync(name, ...args) {
+        const entries = fs.readdirSync(name, ...args);
+        if (inject && String(name) === claims && entries.some(entry => String(entry).startsWith('claim-'))) {
+          inject = false;
+          throw Object.assign(new Error('injected post-claim scan failure'), { code: 'EIO' });
+        }
+        return entries;
+      },
+    },
+  });
+  assert.throws(() => mod.storeCredential(EMAIL, 'pw-eio', env), (e) => e.code === 'EIO',
+    'the real failure must reach the caller');
+  assert.deepEqual(instances(env), [], 'a failed read must not leak this writer\'s own claim');
 
-  assert.equal(cred.storeCredential(EMAIL, 'pw-torn-instance', env), true);
-  assert.deepEqual(claimNames(env), []);
-  assert.equal(cred.getCredential(EMAIL, env), 'pw-torn-instance');
+  assert.equal(mod.storeCredential(EMAIL, 'pw-eio', env), true, 'the next call must work');
+  assert.equal(mod.getCredential(EMAIL, env), 'pw-eio');
 });
 
 // ─── Real processes, real read-modify-write ────────────────────────────────
@@ -365,14 +408,5 @@ test('four processes serialise through the claim and lose no record', { timeout:
   for (const name of ['one', 'two', 'three', 'four']) {
     assert.equal(cred.getCredential(`${name}@example.test`, env), `pw-${name}`);
   }
-  assert.deepEqual(claimNames(env), [], 'every writer must have given its claim instance back');
-});
-
-test('the claim format keeps the container reusable across many writes', (t) => {
-  const { env } = sandbox(t);
-  for (let i = 0; i < 5; i++) {
-    assert.equal(cred.storeCredential(`repeat-${i}@example.test`, `pw-${i}`, env), true);
-  }
-  assert.deepEqual(readdirSync(claimDir(env)), ['format.json']);
-  assert.equal(cred.listCredentialEmails(env).length, 5);
+  assert.deepEqual(instances(env), [], 'every writer must have given its claim instance back');
 });

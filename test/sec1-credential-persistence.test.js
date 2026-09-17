@@ -14,11 +14,10 @@ const source = fs.readFileSync(new URL('../src/devin-connect-credentials.js', im
 function loadCredentials(text, overrides = {}) {
   const deps = {
     fs: { ...fs, ...overrides }, path, crypto,
-    // The lock's claim names carry the owner's host, pid and boot stamp, so this
-    // suite has to substitute os the same way it substitutes fs: a fixed hostname
-    // keeps the "provably gone on this host" rule testable, and a fixed uptime
-    // keeps every claim on this host's current boot.
-    os: { hostname: () => 'fixture-host', uptime: () => 86400 },
+    // The lock's claim names carry the owner's host and pid, so this suite has to
+    // substitute os the same way it substitutes fs: a fixed hostname keeps the
+    // "provably gone on this host" rule testable.
+    os: { hostname: () => 'fixture-host' },
     './config.js': { config: {}, log: { info() {}, warn() {}, error() {} } },
     './devin-connect-metrics.js': { bumpConnect() {}, __registerCredHealth() {} },
   };
@@ -196,8 +195,9 @@ test('SEC-1: each publish uses a different pid-plus-random tmp name', t => {
   const { env } = fixture(t);
   const paths = [];
   const api = loadCredentials(source, {
-    // Only the STORE publishes count here: the lock writes its own format marker
-    // through a rename too, and that one is not a credential publish.
+    // Only the STORE publishes count here: the lock stages its own marker file
+    // through a rename too (legacy migration), and that one is not a credential
+    // publish.
     renameSync(from, to) {
       if (String(to) === env.DEVIN_CONNECT_CRED_FILE) paths.push(String(from));
       return fs.renameSync(from, to);
