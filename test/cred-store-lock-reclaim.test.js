@@ -193,6 +193,61 @@ test('a torn marker staged by a crashed migrator is reclaimed, not treated as an
   assert.deepEqual(readdirSync(lock), ['format.json']);
 });
 
+test('a pre-v2 directory replaced before the guard is refused, never adopted', (t) => {
+  const { env } = sandbox(t);
+  const lock = legacyDir(env, { pid: deadPid(), host: hostname() });
+  // The audit's deterministic replacement case: the pre-guard listing still shows a
+  // dead D0, but an old reclaimer has already removed it and an old writer has
+  // created the replacement directory it is about to stamp. Nothing may be
+  // concluded from the stamp being gone after the guard — absence is not death.
+  let swapped = false;
+  const mod = loadModule({
+    fsOverrides: {
+      readdirSync(name, ...args) {
+        const entries = fs.readdirSync(name, ...args);
+        if (!swapped && String(name) === lock && entries.includes('owner.json')) {
+          swapped = true;
+          fs.unlinkSync(join(lock, 'owner.json'));
+          fs.rmdirSync(lock);
+          fs.mkdirSync(lock);              // the old writer's mkdir, before its owner write
+        }
+        return entries;                    // the stale listing the migrator acted on
+      },
+    },
+  });
+  assert.throws(() => mod.storeCredential(EMAIL, 'pw-swapped', env), (e) => e.code === 'ERR_CRED_STORE_BUSY');
+  assert.equal(swapped, true, 'the replacement must have happened before the guard');
+  assert.deepEqual(readdirSync(lock), [],
+    'the replacement directory belongs to the old writer: the guard must be given back');
+  assert.equal(existsSync(join(lock, 'format.json')), false, 'no marker may be installed over a directory this writer did not prove dead');
+  assert.equal(existsSync(env.DEVIN_CONNECT_CRED_FILE), false, 'and nothing may be stored');
+});
+
+test('a failed marker install keeps the dead-owner evidence and the retry succeeds', (t) => {
+  const { env } = sandbox(t);
+  const lock = legacyDir(env, { pid: deadPid(), host: hostname() });
+  let inject = true;
+  const mod = loadModule({
+    fsOverrides: {
+      writeFileSync(name, ...args) {
+        // The permanent marker is staged under a claim-shaped name inside the
+        // directory; fail exactly there, once.
+        if (inject && typeof name === 'string' && name.startsWith(join(lock, 'claim-'))) {
+          inject = false;
+          throw Object.assign(new Error('synthetic marker ENOSPC'), { code: 'ENOSPC' });
+        }
+        return fs.writeFileSync(name, ...args);
+      },
+    },
+  });
+  assert.throws(() => mod.storeCredential(EMAIL, 'pw-marker-fault', env), (e) => e.code === 'ENOSPC');
+  assert.deepEqual(readdirSync(lock), ['owner.json'],
+    'the dead stamp must survive a failed install: never an empty directory, never lost evidence');
+  assert.equal(mod.storeCredential(EMAIL, 'pw-marker-fault', env), true, 'the retry must complete once the fault clears');
+  assert.deepEqual(readdirSync(lock), ['format.json']);
+  assert.equal(mod.getCredential(EMAIL, env), 'pw-marker-fault');
+});
+
 // ─── Claim instances ───────────────────────────────────────────────────────
 
 test('a dead claim instance is reclaimed and a live one in the same directory is untouched', (t) => {
@@ -392,13 +447,30 @@ test('four processes serialise through the claim and lose no record', { timeout:
     'console.error("busy-timeout"); process.exit(4);',
   ].join('\n'));
 
-  const writers = ['one', 'two', 'three', 'four'].map(name => new Promise((done) => {
+  // Every child this test spawns is tracked so an aborted run cannot leave a
+  // writer (or the lock it holds) behind: only our own children are terminated,
+  // and their close is awaited before the test is over.
+  const spawned = [];
+  t.after(async () => {
+    for (const entry of spawned) {
+      if (entry.child.exitCode === null && entry.child.signalCode === null) entry.child.kill();
+    }
+    await Promise.all(spawned.map(entry => entry.closed));
+  });
+
+  const runWriter = (name) => new Promise((resolve) => {
     const child = spawn(process.execPath, [childPath, env.DEVIN_CONNECT_CRED_FILE, KEY, `${name}@example.test`, `pw-${name}`], { stdio: ['ignore', 'ignore', 'pipe'] });
     let stderr = '';
-    child.stderr.on('data', (chunk) => { stderr += chunk; });
-    child.on('close', (code) => done({ name, code, stderr }));
-  }));
-  const results = await Promise.all(writers);
+    const entry = { child, closed: null };
+    entry.closed = new Promise((closed) => {
+      child.stderr.on('data', (chunk) => { stderr += chunk; });
+      child.on('error', (error) => { closed(); resolve({ name, code: `spawn-error:${error.code || error.message}`, stderr }); });
+      child.on('close', (code) => { closed(); resolve({ name, code, stderr }); });
+    });
+    spawned.push(entry);
+  });
+
+  const results = await Promise.all(['one', 'two', 'three', 'four'].map(runWriter));
   assert.deepEqual(results.map(r => r.code), [0, 0, 0, 0], JSON.stringify(results));
 
   // Each writer read-modify-wrote the whole store under the lock: a lost update

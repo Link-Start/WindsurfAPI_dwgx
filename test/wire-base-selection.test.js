@@ -107,16 +107,34 @@ test('unrelated tags are ignored and an annotated release outranks a newer light
   assert.equal(JSON.stringify(selected).includes('9.9.9'), false);
 });
 
-test('a lightweight release tag is used when no annotated one qualifies', { skip: GIT ? false : SKIP }, (t) => {
+test('lightweight tags are never baselines and an annotated non-ancestor fails closed', { skip: GIT ? false : SKIP }, (t) => {
   const { dir, git, commit } = repo(t);
   const released = commit('released');
-  git('tag', 'v4.0.0', released);
+  const trunk = git('rev-parse', '--abbrev-ref', 'HEAD');
+  git('tag', 'v4.0.0', released);                        // lightweight: not a release identity
+  git('checkout', '-q', '-b', 'side', released);
+  git('tag', '-a', 'v4.2.0', '-m', 'v4.2.0', commit('side work'));
+  git('checkout', '-q', trunk);
   const head = commit('head');
 
+  // A lightweight ancestor and an annotated non-ancestor: neither is a baseline.
+  assert.equal(selectBase(dir), null);
+  assert.equal(run(dir, '--field', 'tag').status, 3);
+  assert.equal(run(dir).stdout.trim(), '');
+  assert.match(run(dir).stderr, /no release tag is a strict ancestor of HEAD/);
+
+  // A lightweight tag at HEAD does not become one either.
+  git('tag', 'v4.1.0');
+  assert.equal(selectBase(dir), null);
+  assert.equal(run(dir).status, 3);
+
+  // Annotating the ancestor qualifies it, and the newer annotated tag on the side
+  // branch stays out of reach.
+  git('tag', '-f', '-a', 'v4.0.0', '-m', 'v4.0.0', released);
   const selected = selectBase(dir);
   assert.equal(selected.tag, 'v4.0.0');
+  assert.equal(selected.kind, 'annotated');
   assert.equal(selected.sha, released);
-  assert.equal(selected.kind, 'lightweight');
   assert.notEqual(selected.sha, head);
 });
 

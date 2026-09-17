@@ -142,9 +142,10 @@ jobs:
         # `git describe --tags --abbrev=0` answers "nearest reachable tag", and at a
         # tagged HEAD that is HEAD's own tag: a rerun of a release commit compared
         # the tree with itself. scripts/wire-base.mjs picks the newest ANNOTATED
-        # release tag that is a strict ancestor of the tested commit (lightweight
-        # only when no annotated one exists), so a rerun at a tag repeats the same
-        # comparison against the PREVIOUS release and the recorded SHAs never change.
+        # release tag that is a strict ancestor of the tested commit — no
+        # lightweight fallback — so a rerun at a tag repeats the same comparison
+        # against the PREVIOUS release, the recorded SHAs never change, and a
+        # repository without such a tag fails closed (exit 3).
         run: |
           node scripts/wire-base.mjs
           BASE_TAG=$(node scripts/wire-base.mjs --field tag)

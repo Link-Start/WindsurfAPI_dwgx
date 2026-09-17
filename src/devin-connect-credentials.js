@@ -309,15 +309,22 @@ function markerState(dir) {
   catch { return 'broken'; }
 }
 
-// Pre-v2 stamp: the only legacy ownership this code understands. Its pid is
-// checkable on this host; anything unreadable, foreign or malformed is 'unknown'
-// and is refused instead of stolen. Never an age rule: a paused pre-v2 writer can
-// still resume and publish, so only the OS may call it dead.
-function legacyOwnerState(dir) {
+// Pre-v2 stamp: the only legacy ownership this code understands. Anything
+// unreadable, foreign or malformed parses to null and is refused instead of
+// stolen. Never an age rule: a paused pre-v2 writer can still resume and publish,
+// so only the OS may call it dead.
+function parseLegacyOwner(dir) {
   let owner;
   try { owner = JSON.parse(readFileSync(join(dir, LEGACY_OWNER_FILE), 'utf8')); }
-  catch { return 'unknown'; }
-  if (!owner || typeof owner.host !== 'string' || !Number.isSafeInteger(owner.pid) || owner.pid <= 0) return 'unknown';
+  catch { return null; }
+  if (!owner || typeof owner.host !== 'string' || !Number.isSafeInteger(owner.pid) || owner.pid <= 0) return null;
+  return { host: owner.host, pid: owner.pid };
+}
+
+// 'dead' | 'live' | 'unknown' for an already-parsed stamp. A null/absent stamp is
+// 'unknown' — absence is never evidence of death.
+function legacyOwnerState(owner) {
+  if (!owner) return 'unknown';
   if (owner.host !== hostname()) return 'unknown';
   try {
     process.kill(owner.pid, 0);
@@ -358,9 +365,10 @@ function installLegacyMarker(dir) {
   }
 }
 
-// A pre-v2 directory is migrated IN PLACE, holding a guard inside it first so that
-// directory instance cannot be replaced under this writer. Everything this code
-// cannot prove is refused; only a stamp whose pid is provably dead is dropped.
+// A pre-v2 directory is migrated IN PLACE and is never renamed, emptied or
+// removed. The permanent marker is installed BEFORE the dead stamp is deleted, so
+// every partial state (crash, ENOSPC, EIO) leaves either the untouched stamp or
+// [format.json, owner.json] — both retryable, and neither empty.
 function migrateLegacyDir(lock) {
   const before = readdirSync(lock);
   for (const entry of before) {
@@ -375,29 +383,45 @@ function migrateLegacyDir(lock) {
   const marker = markerState(lock);
   if (marker === 'broken') throw credentialStoreBusy();
   if (marker === 'ok') {
-    // Already migrated. A pre-v2 stamp can still be sitting here only if a paused
-    // pre-v2 writer is about to publish: prove it dead or refuse, never ignore it.
+    // Already migrated: the marker is the permanent barrier, so only a leftover
+    // dead stamp and the litter of a crashed migrator may need clearing.
     if (existsSync(join(lock, LEGACY_OWNER_FILE))) {
-      if (legacyOwnerState(lock) !== 'dead') throw credentialStoreBusy();
+      const owner = parseLegacyOwner(lock);
+      if (legacyOwnerState(owner) !== 'dead') throw credentialStoreBusy();
       try { unlinkSync(join(lock, LEGACY_OWNER_FILE)); }
       catch (error) { if (error.code !== 'ENOENT') throw error; }
     }
-    // Only litter from a crashed migrator may remain; anything else is refused.
     if (sweepInstances(lock, null, new Set([FORMAT_FILE]))) throw credentialStoreBusy();
     return;
   }
+  const hadStamp = before.includes(LEGACY_OWNER_FILE);
+  const stampBefore = hadStamp ? parseLegacyOwner(lock) : null;
+  if (hadStamp && legacyOwnerState(stampBefore) !== 'dead') throw credentialStoreBusy();
+  // Hold a unique, nonempty barrier INSIDE this exact directory before touching the
+  // shared stamp: an old reclaimer's rmdir now fails (ENOTEMPTY) even after it
+  // unlinks the stamp, so the directory instance cannot be vacated under us.
   const guard = claimName();
   mkdirSync(join(lock, guard), { mode: 0o700 });
   try {
     if (sweepInstances(lock, guard, new Set([LEGACY_OWNER_FILE]))) throw credentialStoreBusy();
-    const stamp = existsSync(join(lock, LEGACY_OWNER_FILE)) ? legacyOwnerState(lock) : 'dead';
-    if (stamp !== 'dead') throw credentialStoreBusy();
+    // Revalidate AFTER the barrier, and only against the identity judged dead above.
+    // A stamp that is gone proves nothing — an old reclaimer may have removed it, or
+    // an old writer may have replaced the whole directory with one it is about to
+    // stamp — so absence is always BUSY, never death. A different owner is refused
+    // too: this writer never verified that one.
+    const stampNow = parseLegacyOwner(lock);
+    if (!stampNow) throw credentialStoreBusy();
+    if (!stampBefore || stampNow.host !== stampBefore.host || stampNow.pid !== stampBefore.pid) throw credentialStoreBusy();
+    if (legacyOwnerState(stampNow) !== 'dead') throw credentialStoreBusy();
+    // Permanent barrier first, shared stamp second.
+    installLegacyMarker(lock);
     try { unlinkSync(join(lock, LEGACY_OWNER_FILE)); }
     catch (error) { if (error.code !== 'ENOENT') throw error; }
-    installLegacyMarker(lock);
     log.warn('credential store lock upgraded in place: a dead pre-v2 stamp was removed');
   } finally {
-    // A guard that survived would make the directory refuse every later writer.
+    // Safe to release in every path: the marker, the untouched stamp, or the
+    // refusal itself keeps the directory non-empty, so no old writer can take the
+    // path and no later migrator sees an ambiguous empty directory.
     releaseInstance(lock, guard);
   }
 }
@@ -464,7 +488,10 @@ function acquireClaim(file) {
 // serialisation point: of two writers that both reach it, the later one sees the
 // earlier one's claim (a live writer never gives its claim up) and refuses, so
 // they cannot both publish. Provably dead instances are ignored — they cannot
-// publish anything.
+// publish anything. Scope: this refuses under coherent local-filesystem semantics
+// and relies on every protocol participant never deleting a live claim instance;
+// it is not a defence against an external agent that removes one anyway, and no
+// check can make an arbitrary external removal of a live claim safe.
 function assertExclusive(file) {
   const claim = _heldClaims.get(file);
   if (!claim) throw credentialStoreError('ERR_CRED_STORE_UNLOCKED');
@@ -708,7 +735,7 @@ export function listCredentialEmails(env = process.env) {
   return Object.keys(readStore(env).records);
 }
 
-export const __testing = { credFilePath, deriveKey, normalizeEmail, tryRepairJson, salvageRecordsByRegex, isValidRecord, readStore, assertRecordSetPreserved, sentinelPath, claimsPath, claimName, parseClaim, claimState, removeInstance, legacyOwnerState, markerState, migrateLegacyDir, openSentinel, acquireClaim, releaseInstance, sweepInstances };
+export const __testing = { credFilePath, deriveKey, normalizeEmail, tryRepairJson, salvageRecordsByRegex, isValidRecord, readStore, assertRecordSetPreserved, sentinelPath, claimsPath, claimName, parseClaim, claimState, removeInstance, parseLegacyOwner, legacyOwnerState, markerState, migrateLegacyDir, openSentinel, acquireClaim, releaseInstance, sweepInstances };
 
 // Surface decrypt health through the central connect-metrics endpoint without a
 // static import cycle (metrics → credentials → config → ...). Registered at

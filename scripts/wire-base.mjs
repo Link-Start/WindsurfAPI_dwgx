@@ -15,11 +15,12 @@
 // rerun of a release commit compares the release against the one before it.
 //
 // Selection:
-//   1. tags shaped like a release (vX.Y.Z, optionally -suffix) reachable from HEAD;
+//   1. ANNOTATED tags shaped like a release (vX.Y.Z, optionally -suffix) reachable
+//      from HEAD. A lightweight tag is not this project's release identity (OTA
+//      follows the annotated tag), so there is no fallback: an unqualified
+//      fallback would silently compare against a tag that was never released.
 //   2. drop any whose commit IS HEAD (strict ancestor only);
-//   3. prefer annotated tags — the release identity this project tags with — and
-//      among equals the highest version; a lightweight tag is used only when no
-//      annotated candidate qualifies;
+//   3. keep the highest version;
 //   4. print the selection (JSON, or one field with --field) with the resolved SHA.
 //
 // Exit codes: 0 selected, 3 no valid baseline (the gate fails closed instead of
@@ -56,19 +57,19 @@ export function selectBase(cwd = process.cwd()) {
   for (const { name, annotated, commit } of readTags(cwd)) {
     const match = RELEASE_TAG.exec(name);
     if (!match) continue;
+    if (!annotated) continue;                          // annotated release tags only
     if (!/^[0-9a-f]{40,64}$/.test(commit)) continue;   // a tag on a tree/blob is not a revision
     if (commit === head) continue;                     // never the commit under test
-    candidates.push({ tag: name, sha: commit, annotated, parts: match.slice(1, 4).map(Number), suffix: match[4] || '' });
+    candidates.push({ tag: name, sha: commit, parts: match.slice(1, 4).map(Number), suffix: match[4] || '' });
   }
   if (!candidates.length) return null;
   candidates.sort((a, b) => {
-    if (a.annotated !== b.annotated) return a.annotated ? -1 : 1;
     for (let i = 0; i < 3; i++) { if (a.parts[i] !== b.parts[i]) return b.parts[i] - a.parts[i]; }
     if (a.suffix !== b.suffix) return a.suffix ? 1 : -1;   // a final release outranks its pre-release
     return a.tag < b.tag ? -1 : 1;
   });
   const best = candidates[0];
-  return { tag: best.tag, sha: best.sha, kind: best.annotated ? 'annotated' : 'lightweight', head, releases: candidates.length };
+  return { tag: best.tag, sha: best.sha, kind: 'annotated', head, releases: candidates.length };
 }
 
 function main() {
