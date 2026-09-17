@@ -2,7 +2,7 @@
 
 <p align="center">
   <a href="#最近的版本">最近的版本</a> ·
-  <a href="docs/releases/">全部 187 份发布说明</a> ·
+  <a href="docs/releases/">全部 188 份发布说明</a> ·
   <a href="README.md">← 主 README</a>
 </p>
 
@@ -19,9 +19,9 @@
 
 | | |
 |---|---|
-| 发布说明 | **187** 份,v2.0.6 → v3.9.36 |
-| git tag | 198 个 |
-| 当前 | **v3.9.36**(2026-09-17) |
+| 发布说明 | **188** 份,v2.0.6 → v3.9.37 |
+| git tag | 199 个 |
+| 当前 | **v3.9.37**(2026-09-17) |
 | 运行时依赖 | **0** —— 从第一个版本保持到现在 |
 
 ```mermaid
@@ -29,7 +29,7 @@ flowchart LR
     A["v2.0.x<br/>118 个 tag<br/><br/>OpenAI 兼容层成型"]
     B["v3.0 – v3.8<br/><br/>Anthropic / Gemini 前端<br/>Dashboard 与账号池"]
     C["v3.9.0 – v3.9.16<br/><br/>DEVIN_CONNECT 直连<br/>native tool bridge"]
-    D["v3.9.17 – v3.9.36<br/><br/>工具方言 · reasoning 边界<br/>Connect 目录 · ACU opt-in"]
+    D["v3.9.17 – v3.9.37<br/><br/>工具方言 · reasoning 边界<br/>Connect 目录 · ACU opt-in"]
     A --> B --> C --> D
 
     classDef past fill:#8957e522,stroke:#8957e5
@@ -41,6 +41,14 @@ flowchart LR
 ## 最近的版本
 
 下面是 3.9.x 全系。更早的版本请直接翻 [`docs/releases/`](docs/releases/)。
+
+### [v3.9.37](docs/releases/RELEASE_NOTES_3.9.37.md) · 2026-09-17
+
+对 v3.9.36 的独立对抗审查(1 P1 + 4 P2,全部复现后修复)。**凭据库锁重写为实例身份**:并发写不再可能
+丢记录(旧实现的两个回收者会互删新锁)、写者中途死亡不再需要人工解锁;固定路径改为永久哨兵文件,
+新旧版本不会互相覆盖。CI 的 wire 门禁修掉"在已打 tag 的提交上与自身比较"的退化,改为选择严格祖先的
+annotated release tag。`credentialStored` 只在实际落盘后为真;会话索引 resolve 路径不再泄漏归属。
+运维注意:旧版崩溃留下的空 `.lock` 目录不会被自动接管,删掉即恢复(有意保守)。默认路径字节不变。
 
 ### [v3.9.36](docs/releases/RELEASE_NOTES_3.9.36.md) · 2026-09-17
 
