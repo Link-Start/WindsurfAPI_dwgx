@@ -27,6 +27,7 @@ scripts/*
 !scripts/run-test-shard.mjs
 !scripts/run-tests.mjs
 !scripts/spec-static-check.mjs
+!scripts/wire-base.mjs
 !scripts/spec-baseline-audit.mjs
 !scripts/s2-a-bench.mjs
 !scripts/response-store-copy-bench.mjs

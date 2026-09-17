@@ -138,12 +138,27 @@ jobs:
         with:
           node-version: '24'
 
-      - name: Materialise the last release as the comparison base
+      - name: Select the release baseline (strict ancestor, recorded)
+        # `git describe --tags --abbrev=0` answers "nearest reachable tag", and at a
+        # tagged HEAD that is HEAD's own tag: a rerun of a release commit compared
+        # the tree with itself. scripts/wire-base.mjs picks the newest ANNOTATED
+        # release tag that is a strict ancestor of the tested commit (lightweight
+        # only when no annotated one exists), so a rerun at a tag repeats the same
+        # comparison against the PREVIOUS release and the recorded SHAs never change.
         run: |
-          BASE_TAG=$(git describe --tags --abbrev=0)
-          echo "comparing against $BASE_TAG"
-          git worktree add --detach "$RUNNER_TEMP/wire-base" "$BASE_TAG"
+          node scripts/wire-base.mjs
+          BASE_TAG=$(node scripts/wire-base.mjs --field tag)
+          BASE_SHA=$(node scripts/wire-base.mjs --field sha)
+          HEAD_SHA=$(git rev-parse HEAD)
+          if [ "$BASE_SHA" = "$HEAD_SHA" ]; then
+            echo "::error::refusing to compare $HEAD_SHA against itself"
+            exit 1
+          fi
+          git worktree add --detach "$RUNNER_TEMP/wire-base" "$BASE_SHA"
+          echo "comparing $HEAD_SHA against $BASE_SHA ($BASE_TAG)"
           echo "WIRE_BASE_TREE=$RUNNER_TEMP/wire-base" >> "$GITHUB_ENV"
+          echo "WIRE_BASE_SHA=$BASE_SHA" >> "$GITHUB_ENV"
+          echo "WIRE_BASE_TAG=$BASE_TAG" >> "$GITHUB_ENV"
           echo "WIRE_BASE_REQUIRED=1" >> "$GITHUB_ENV"
 
       - name: Same bytes as the last release, or this fails
