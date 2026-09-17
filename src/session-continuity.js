@@ -404,13 +404,21 @@ function ownIndexKey(stateId, key) {
   owned.add(key);
 }
 
+// Every pairIndex insertion goes through here. A key that is written without an
+// owner outlives the state that wrote it: once the state's rolling window moves
+// past it, nothing can find the membership again and eviction leaves it behind
+// (2026-09-17 review, F4: the resolve re-association branch indexed its new
+// window directly). Ownership is what makes eviction able to drop exactly the
+// state's own keys — membership in a key another live state still holds stays.
+function linkPairIndex(stateId, key) {
+  let set = pairIndex.get(key);
+  if (!set) { set = new Set(); pairIndex.set(key, set); }
+  set.add(stateId);
+  ownIndexKey(stateId, key);
+}
+
 function indexState(stateId, state) {
-  for (const ph of state.pairWindow) {
-    const k = `${state.scopeId}:${ph}`;
-    if (!pairIndex.has(k)) pairIndex.set(k, new Set());
-    pairIndex.get(k).add(stateId);
-    ownIndexKey(stateId, k);
-  }
+  for (const ph of state.pairWindow) linkPairIndex(stateId, `${state.scopeId}:${ph}`);
 }
 
 // ─── Public API ────────────────────────────────────────────────────────────
@@ -631,11 +639,7 @@ export function resolveSessionId(callerKey, messages, env = process.env) {
       const newWindow = hashes.slice(-PAIR_WINDOW_SIZE);
       // Re-index with new hashes (stateId stored on state object for O(1) access)
       if (found.state.stateId) {
-        for (const ph of newWindow) {
-          const k = `${scopeId}:${ph}`;
-          if (!pairIndex.has(k)) pairIndex.set(k, new Set());
-          pairIndex.get(k).add(found.state.stateId);
-        }
+        for (const ph of newWindow) linkPairIndex(found.state.stateId, `${scopeId}:${ph}`);
       }
       found.state.pairWindow = newWindow;
       found.state.pairRecords = postBarrierRecords.slice(-PAIR_WINDOW_SIZE);
@@ -655,8 +659,7 @@ export function resolveSessionId(callerKey, messages, env = process.env) {
     const stateId = crypto.randomUUID();
     const state = { stateId, scopeId, sessionId, pairWindow: [], pairRecords: [], lastSeen: now, commitKey: null, dialogAnchor: null, rootKey, configId: crypto.randomUUID(), turnCount: 0, reasoningTails: [] };
     statesById.set(stateId, state);
-    if (!pairIndex.has(rootKey)) pairIndex.set(rootKey, new Set());
-    pairIndex.get(rootKey).add(stateId);
+    linkPairIndex(stateId, rootKey);
     return sessionId;
   }
 
@@ -815,10 +818,7 @@ export function commitAfterResponse(callerKey, messagesWithResponse, env = proce
   commitIndex.set(commitKey, stateId);
   ownIndexKey(stateId, commitKey);
   indexState(stateId, state);
-  if (rootKey) {
-    if (!pairIndex.has(rootKey)) pairIndex.set(rootKey, new Set());
-    pairIndex.get(rootKey).add(stateId);
-  }
+  if (rootKey) linkPairIndex(stateId, rootKey);
   return sessionId;
 }
 
@@ -838,4 +838,21 @@ export function _resetForTests() {
 
 export function _getStoreSize() {
   return statesById.size;
+}
+
+// Index health, for the eviction invariant: no index key may still reference a
+// state that eviction dropped (a membership like that can never be removed
+// again, because the state that owns it is gone from statesById), and a key two
+// live states share must keep the surviving one.
+export function _getIndexStats() {
+  let pairKeys = 0; let pairMemberships = 0; let sharedKeys = 0; let deadMemberships = 0;
+  for (const set of pairIndex.values()) {
+    pairKeys++;
+    pairMemberships += set.size;
+    if (set.size > 1) sharedKeys++;
+    for (const id of set) if (!statesById.has(id)) deadMemberships++;
+  }
+  let deadCommitKeys = 0;
+  for (const id of commitIndex.values()) if (!statesById.has(id)) deadCommitKeys++;
+  return { pairKeys, pairMemberships, sharedKeys, deadMemberships, commitKeys: commitIndex.size, deadCommitKeys, ownedStates: ownedIndexKeys.size };
 }

@@ -18,6 +18,7 @@ import {
   analyzeHistory,
   _resetForTests,
   _getStoreSize,
+  _getIndexStats,
 } from '../src/session-continuity.js';
 
 const ENV = { DEVIN_CONNECT_SESSION_REUSE: '1' };
@@ -706,5 +707,77 @@ describe('session-continuity: tail-anchored overlap', () => {
     const divId = resolveSessionId('c1', divergent, ENV);
     const divNext = resolveSessionId('c1', [...divergent, { role: 'user', content: 'A4' }], ENV);
     assert.equal(divNext, divId, 'the divergent fork must stay stable on its own id');
+  });
+});
+
+describe('session-continuity: index ownership across a rolling window', () => {
+  beforeEach(() => _resetForTests());
+  afterEach(() => _resetForTests());
+
+  // The shape the 2026-09-17 review measured: one commit, then a client that
+  // re-sends a growing history and never commits again. Every resolve slides the
+  // 11-pair window and re-indexes it, so the state owns far more keys than the
+  // window still holds — and eviction has to drop all of them, not just the ones
+  // it can still derive from the state.
+  it('a resolve-only window leaves no dead index membership behind when the state is evicted', () => {
+    const ask = (i) => ({ role: 'user', content: `ask ${i} about the rolling window` });
+    const answer = (i) => ({ role: 'assistant', content: `answer ${i} keeps its pair hash stable` });
+    const history = [ask(0)];
+    const firstId = resolveSessionId('caller-rolling', history, ENV);
+    history.push(answer(0));
+    assert.equal(commitAfterResponse('caller-rolling', history, ENV), firstId);
+
+    for (let i = 1; i <= 39; i++) {
+      history.push(ask(i));
+      assert.equal(resolveSessionId('caller-rolling', history, ENV), firstId, `resolve ${i} must stay on the same session`);
+      history.push(answer(i));
+    }
+
+    const before = _getIndexStats();
+    assert.equal(_getStoreSize(), 1);
+    assert.equal(before.deadMemberships, 0);
+    assert.equal(before.pairMemberships, before.pairKeys);
+    assert.ok(before.pairKeys > 20, `the window must have indexed more keys than it still holds (got ${before.pairKeys})`);
+
+    // Evict through the LRU bound, exactly as a busy process would.
+    const evictEnv = { ...ENV, DEVIN_CONNECT_SESSION_MAX_STATES: '1' };
+    resolveSessionId('caller-other', [{ role: 'user', content: 'unrelated dialog' }], evictEnv);
+
+    const after = _getIndexStats();
+    assert.equal(_getStoreSize(), 1, 'only the new state remains');
+    assert.equal(after.deadMemberships, 0, 'no pair index key may still reference the evicted state');
+    assert.equal(after.deadCommitKeys, 0, 'no commit key may either');
+    assert.equal(after.pairMemberships, after.pairKeys, 'the surviving state owns exactly its own keys');
+    assert.equal(after.ownedStates, 1);
+  });
+
+  it('eviction keeps the memberships a live state still shares, and live commits stay idempotent', () => {
+    const opener = { role: 'user', content: 'shared opener for two dialogs' };
+    const first = resolveSessionId('caller-shared', [opener], ENV);
+    const firstCommit = commitAfterResponse('caller-shared', [opener, { role: 'assistant', content: 'first answer' }], ENV);
+    assert.equal(firstCommit, first, 'the frozen opener must carry into the pair chain');
+
+    // A second dialog on the same opener forks: both live states are indexed by
+    // that shared root anchor.
+    const secondHistory = [opener, { role: 'assistant', content: 'a different answer' }];
+    const secondCommit = commitAfterResponse('caller-shared', secondHistory, ENV);
+    assert.notEqual(secondCommit, first);
+    assert.ok(_getIndexStats().sharedKeys >= 1, 'the root anchor must be shared by both live states');
+
+    // A third state pushes the store over its bound, evicting the oldest (first).
+    const before = _getIndexStats();
+    resolveSessionId('caller-shared', [{ role: 'user', content: 'a third dialog opener' }], { ...ENV, DEVIN_CONNECT_SESSION_MAX_STATES: '2' });
+    const after = _getIndexStats();
+    assert.equal(after.deadMemberships, 0, 'the evicted state must not leave memberships behind');
+    assert.equal(after.deadCommitKeys, 0);
+    assert.equal(after.pairKeys, before.pairKeys, 'a key the surviving state still holds must not be dropped with its partner');
+    assert.equal(after.pairMemberships, before.pairMemberships - 1, 'exactly the evicted state\'s memberships may go');
+    assert.equal(after.pairMemberships, after.pairKeys, 'only one live state may hold each remaining key');
+
+    // The survivor keeps its identity, its memberships and its idempotency.
+    assert.equal(commitAfterResponse('caller-shared', secondHistory, ENV), secondCommit,
+      'a live state keeps historical commit idempotency');
+    assert.equal(resolveSessionId('caller-shared', [...secondHistory, { role: 'user', content: 'follow up' }], ENV), secondCommit,
+      'and it still resolves through its own pair window');
   });
 });
