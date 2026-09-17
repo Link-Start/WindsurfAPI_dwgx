@@ -6,14 +6,14 @@
     {
       "name": "Storage boundary stops detaching retained messages",
       "file": "src/response-store.js",
-      "anchor": "  const kept = structuredClone(capEntryBytes(truncateMessages(messages)));",
+      "anchor": "  const kept = copyStoredValue(capEntryBytes(truncateMessages(messages)));",
       "replacement": "  const kept = capEntryBytes(truncateMessages(messages));",
       "expectCaught": true
     },
     {
       "name": "Read boundary exposes the stored message graph",
       "file": "src/response-store.js",
-      "anchor": "    messages: structuredClone(entry.messages),",
+      "anchor": "    messages: copyStoredValue(entry.messages),",
       "replacement": "    messages: entry.messages,",
       "expectCaught": true
     }

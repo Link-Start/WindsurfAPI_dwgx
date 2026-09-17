@@ -22,7 +22,16 @@ function load(limit = value => value) {
     approxBytes: value => Buffer.byteLength(JSON.stringify(value)),
     isPastIdle: () => false, isPastMaxAge: () => false, log: { warn() {} },
   };
-  return new Function(...Object.keys(deps), `let _bytes = 0;\n${extract('putResponse')}\n${extract('getResponse')}\nreturn {putResponse,getResponse};`)(...Object.values(deps));
+  // The copy helper is a module-level plain function (not exported), and both
+  // exported entry points call it; without pulling its text in, the harness would
+  // evaluate bodies that reference an undefined name.
+  function extractPlain(name) {
+    const start = source.indexOf(`function ${name}(`);
+    const end = source.indexOf('\n}', start) + 2;
+    assert.ok(start >= 0 && end > start, `plain function ${name} must be present`);
+    return source.slice(start, end);
+  }
+  return new Function(...Object.keys(deps), `let _bytes = 0;\n${extractPlain('copyStoredValue')}\n${extract('putResponse')}\n${extract('getResponse')}\nreturn {putResponse,getResponse};`)(...Object.values(deps));
 }
 function history() {
   return [{ role: 'user', content: [{ type: 'text', text: 'original' },

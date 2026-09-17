@@ -113,6 +113,30 @@ const MAX_BYTES = parseByteSize(process.env.RESPONSE_STORE_MAX_BYTES)
 // length (not byteLength) plus a flat per-message overhead. An exact figure would
 // need to walk every part of every content array on the hot path; what matters is
 // that the estimate is monotonic in the real cost so eviction tracks growth.
+// A copy that allocates only where it must. `structuredClone` re-copies every
+// string it walks — a 4 MB base64 image in a stored turn cost ~2.9 ms per put and
+// ~2.6 ms per read — and it turns a Buffer into a Uint8Array, losing the type the
+// rest of the pipeline expects. Strings, numbers and booleans are immutable, so
+// they can be shared; only containers are re-created. Anything that is not plain
+// JSON-shaped (Date, Map, class instances, functions) keeps the old semantics by
+// falling back to structuredClone, including its throw on functions.
+function copyStoredValue(value) {
+  // structuredClone refuses to clone functions and symbols; keep that loud
+  // rejection instead of quietly storing a live reference.
+  if (typeof value === 'function' || typeof value === 'symbol') return structuredClone(value);
+  if (value === null || typeof value !== 'object') return value;
+  if (Array.isArray(value)) return value.map(copyStoredValue);
+  if (Buffer.isBuffer(value)) return Buffer.from(value);
+  if (ArrayBuffer.isView(value)) return new value.constructor(value);
+  const proto = Object.getPrototypeOf(value);
+  if (proto === Object.prototype || proto === null) {
+    const out = {};
+    for (const key of Object.keys(value)) out[key] = copyStoredValue(value[key]);
+    return out;
+  }
+  return structuredClone(value);
+}
+
 function approxBytes(messages) {
   let n = 0;
   for (const m of messages) {
@@ -518,9 +542,10 @@ export function putResponse(responseId, messages, callerKey, opts = {}) {
 
   const now = Date.now();
   const existing = _entries.get(responseId);
+
   // Existing limiters are copy-on-write. Clone only the retained graph, so
   // discarded history is not copied and no stored object aliases the caller.
-  const kept = structuredClone(capEntryBytes(truncateMessages(messages)));
+  const kept = copyStoredValue(capEntryBytes(truncateMessages(messages)));
   const bytes = approxBytes(kept);
   const createdAt = existing?.createdAt || now;
   const model = opts.model || existing?.model || null;
@@ -649,7 +674,7 @@ export function getResponse(responseId, callerKey) {
   return {
     ok: true,
     // Each reader owns its result, including nested content/tool-call objects.
-    messages: structuredClone(entry.messages),
+    messages: copyStoredValue(entry.messages),
     model: entry.model,
     createdAt: entry.createdAt,
     status: entry.status,

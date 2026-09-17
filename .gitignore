@@ -29,6 +29,7 @@ scripts/*
 !scripts/spec-static-check.mjs
 !scripts/spec-baseline-audit.mjs
 !scripts/s2-a-bench.mjs
+!scripts/response-store-copy-bench.mjs
 !scripts/s2-a-golden.mjs
 !scripts/s2-b-bench.mjs
 !scripts/cascade-survival-probe.mjs
