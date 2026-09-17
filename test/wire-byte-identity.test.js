@@ -10,9 +10,26 @@
 // bytes to be identical. Any PR that alters default-path output fails here.
 //
 // The comparison base is the last released tag (CI exports WIRE_BASE_TREE after
-// materialising it; locally a `.claude/worktrees/wire-base` checkout works). When
-// neither exists the test SKIPS with a reason instead of passing quietly — a gate
-// that cannot run must never look green.
+// materialising it from scripts/wire-base.mjs, which picks the newest ANNOTATED tag
+// that is a strict ancestor of the tested commit — `git describe --tags` returns
+// HEAD's own tag on a release commit, and a gate that compares the tree with itself
+// passes without testing anything). Locally a `.claude/worktrees/wire-base` checkout
+// works. When neither exists the test SKIPS with a reason instead of passing
+// quietly — a gate that cannot run must never look green.
+//
+// WHAT THIS DOES NOT PROVE (2026-09-17 review, protocol lens — do not read this
+// gate as "the wire is correct"):
+//   • it compares the protobuf request body only; not HTTP/Connect framing, not the
+//     handler, not the response stream;
+//   • the matrix is 9 histories x 5 prepare routes x native/emulated x 3 env, chosen
+//     around the shapes that changed recently — it does NOT contain #271's
+//     split-call + stray-text shape, and every replay env here is default or
+//     explicitly off, so reasoning-replay behaviour is out of scope;
+//   • a pre-existing defect that survives both trees passes by construction: dropping
+//     image-only assistant turns (#272) is byte-identical before and after any of
+//     these commits.
+// It proves exactly one thing, and it is the thing it must prove: the default path
+// did not move.
 import assert from 'node:assert/strict';
 import crypto from 'node:crypto';
 import { existsSync } from 'node:fs';
