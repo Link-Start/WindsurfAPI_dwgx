@@ -2,7 +2,7 @@
 
 <p align="center">
   <a href="#最近的版本">最近的版本</a> ·
-  <a href="docs/releases/">全部 182 份发布说明</a> ·
+  <a href="docs/releases/">全部 187 份发布说明</a> ·
   <a href="README.md">← 主 README</a>
 </p>
 
@@ -19,9 +19,9 @@
 
 | | |
 |---|---|
-| 发布说明 | **186** 份,v2.0.6 → v3.9.35 |
-| git tag | 197 个 |
-| 当前 | **v3.9.35**(2026-09-16) |
+| 发布说明 | **187** 份,v2.0.6 → v3.9.36 |
+| git tag | 198 个 |
+| 当前 | **v3.9.36**(2026-09-17) |
 | 运行时依赖 | **0** —— 从第一个版本保持到现在 |
 
 ```mermaid
@@ -29,7 +29,7 @@ flowchart LR
     A["v2.0.x<br/>118 个 tag<br/><br/>OpenAI 兼容层成型"]
     B["v3.0 – v3.8<br/><br/>Anthropic / Gemini 前端<br/>Dashboard 与账号池"]
     C["v3.9.0 – v3.9.16<br/><br/>DEVIN_CONNECT 直连<br/>native tool bridge"]
-    D["v3.9.17 – v3.9.35<br/><br/>工具方言 · reasoning 边界<br/>Connect 目录 · ACU opt-in"]
+    D["v3.9.17 – v3.9.36<br/><br/>工具方言 · reasoning 边界<br/>Connect 目录 · ACU opt-in"]
     A --> B --> C --> D
 
     classDef past fill:#8957e522,stroke:#8957e5
@@ -41,6 +41,10 @@ flowchart LR
 ## 最近的版本
 
 下面是 3.9.x 全系。更早的版本请直接翻 [`docs/releases/`](docs/releases/)。
+
+### [v3.9.36](docs/releases/RELEASE_NOTES_3.9.36.md) · 2026-09-17
+
+PR #271(并行工具调用間的游离文本折叠,含丢图/空 ID/字段丢失三处评审修正)+ 六条独立审计线:请求路径白给 CPU(缓存键门控、单遍 prompt、正则提升、前缀表、图像 base64)、编码器与分帧器的复制放大、可靠性(索引淘汰、租户公平份额、额度刷新合并、响应存储边界、JWT 淘汰、流失败分层)、安全(凭据库写竞态与锁回收、可信客户端 IP、主机白名单、原型键、日志脱敏)。**默认路径字节不变现在是 CI 门禁**(270 帧对拍)。无 API 破坏。
 
 ### [v3.9.35](docs/releases/RELEASE_NOTES_3.9.35.md) · 2026-09-16
 

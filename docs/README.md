@@ -21,7 +21,7 @@ flowchart TD
     Q -->|"understand it"| ARCH["review.html<br/>whole-system map"]
     Q -->|"know what was probed"| LED["AUDIT-LEDGER.md<br/>16 rounds, append-only"]
     Q -->|"maintain it"| HO["HANDOFF-*.md<br/>1 live head + 10 archived"]
-    Q -->|"what changed"| REL["releases/<br/>186 notes, v2.0.6 → v3.9.35"]
+    Q -->|"what changed"| REL["releases/<br/>187 notes, v2.0.6 → v3.9.36"]
 
     classDef user fill:#1f6feb22,stroke:#1f6feb
     classDef maint fill:#8957e522,stroke:#8957e5
@@ -62,7 +62,7 @@ flowchart TD
 
 | # | File | Why |
 |---|---|---|
-| 1 | **[HANDOFF-2026-09-16.md](HANDOFF-2026-09-16.md)** | Current state (v3.9.35), what to expose, what is blocked on someone else. Read §1 first (operational traps), then §4 (what is deliberately not done). Product tag is v3.9.35; OTA follows the latest annotated tag, not later untagged SHAs. |
+| 1 | **[HANDOFF-2026-09-17.md](HANDOFF-2026-09-17.md)** | Current state (v3.9.36), what to expose, what is blocked on someone else. Read §1 first (operational traps), then §4 (what is deliberately not done). Product tag is v3.9.36; OTA follows the latest annotated tag, not later untagged SHAs. |
 | 2 | **[AUDIT-LEDGER.md](AUDIT-LEDGER.md)** | Which subsystems were *actually probed*, the conclusion, and where the guard lives. Start with its "怎么读这份文件" section: the file is appended to per round and is **not** organised by topic, so that section is the only reliable entry point. It states its own round count and line-scale — **this row deliberately states neither**, because both belong to a file that grows every round, and the version of this row that did cite a round count went stale twice. |
 | 3 | **[DEVIN-CONNECT-CUTOVER.md](DEVIN-CONNECT-CUTOVER.md)** | Production cutover runbook. `DEVIN_CONNECT` is what production actually runs (the code default is OFF; the deployment sets it), so this is not optional. Paid wire-calibration procedure in §8. |
 
@@ -78,7 +78,7 @@ Two sections are worth reading even though they sit in superseded files:
 
 ### The rest of the handoffs are archive
 
-Newest first. All eleven archived files carry a banner naming the current handoff **and** a link back to this
+Newest first. All twelve archived files carry a banner naming the current handoff **and** a link back to this
 index, so whichever one you open by accident, you are two clicks from the right place. That is
 worth keeping: **`ls docs/` does not sort chronologically** — `-B.md` sorts before `.md` (so the
 original `08-04` sorts *after* B/C/D/E), and `HANDOFF-2026-08-05.md` has a wrong filename date
@@ -87,6 +87,7 @@ Trust this list, not the directory listing.
 
 | Handoff | Covers |
 |---|---|
+| [09-16](HANDOFF-2026-09-16.md) | v3.9.35 — PR #271 合入前的状态 |
 | [08-20](HANDOFF-2026-08-20.md) | v3.9.25–v3.9.34 — 面板 401、旱灾名单、Connect 目录、四条外部 PR |
 | [08-06](HANDOFF-2026-08-06.md) | v3.9.20 — Gemini tool-args, then the live head moved here |
 | [08-04-E](HANDOFF-2026-08-04-E.md) | v3.9.17–v3.9.19 — PR #241 merged, the digest ceiling and its missing half, the post-release fan-out review |
