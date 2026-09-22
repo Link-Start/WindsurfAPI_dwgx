@@ -10,6 +10,9 @@ const root = resolve(fileURLToPath(new URL('..', import.meta.url)));
 // target is elsewhere — and all three input routes have to share one boundary: a named
 // path, the recursive walk, and `git ls-files` (what a bare `secret-scan` scans, and
 // what `scripts/local-gate.mjs` runs on every push; git lists through a junction too).
+// A resolved-path namespace check, not inode provenance or an OS sandbox. Hard links
+// may share bytes with another name outside the root. Concurrent replacement after
+// validation is outside the one-writer scan contract.
 const rootReal = realpathSync(root);
 const args = process.argv.slice(2);
 
@@ -20,12 +23,12 @@ function resolveInsideRepo(absPath) {
   try { real = realpathSync(absPath); } catch { return null; }
   const rel = relative(rootReal, real);
   if (rel === '') return real;                       // the repository root itself
-  if (rel.startsWith('..') || isAbsolute(rel)) return null;
+  if (rel === '..' || rel.startsWith('..' + sep) || isAbsolute(rel)) return null;
   return real;
 }
 
 function refuseOutside(what, absPath) {
-  console.error(`secret-scan: ${what} resolves outside ${root} (${absPath}) — refusing to report a scan that did not cover its input`);
+  console.error(`secret-scan: ${what} resolves outside ${root} or cannot be resolved (${absPath}) — refusing to report a scan that did not cover its input`);
   process.exit(2);
 }
 
@@ -146,7 +149,7 @@ function toRepoPath(file) {
 
 function isIgnored(file) {
   const repoPath = toRepoPath(file);
-  if (!repoPath || repoPath.startsWith('..') || repoPath.includes('\0')) return true;
+  if (!repoPath || (repoPath === '..' || repoPath.startsWith('../')) || repoPath.includes('\0')) return true;
   if (IGNORED_PATHS.has(repoPath)) return true;
   if (IGNORED_PREFIXES.some(prefix => repoPath.startsWith(prefix))) return true;
   const lower = repoPath.toLowerCase();
@@ -181,7 +184,7 @@ function expandInput(entry) {
   if (!resolveInsideRepo(abs)) refuseOutside(entry, abs);
   if (!statSync(abs).isDirectory()) return [entry];
   const files = [];
-  const seen = new Set([rootReal]);
+  const seen = new Set([resolveInsideRepo(abs)]);
   const walk = (dir) => {
     let entries;
     try {
@@ -196,14 +199,14 @@ function expandInput(entry) {
       if (real === null) {
         // A link out of the repository is not a file to skip quietly: "we never looked
         // there" must never read as "we looked and it was clean".
-        if (dirent.isSymbolicLink()) refuseOutside(toRepoPath(full), full);
-        continue;
+        refuseOutside(toRepoPath(full), full);
       }
       // A link that stays inside is followed, and its real path is remembered so a
       // cycle cannot make the walk loop.
       if (seen.has(real)) continue;
       let isDir = false;
-      try { isDir = statSync(real).isDirectory(); } catch { continue; }
+      try { isDir = statSync(real).isDirectory(); }
+      catch { refuseOutside(toRepoPath(full), full); }
       if (isDir) { seen.add(real); walk(full); }
       else files.push(toRepoPath(full));
     }
@@ -230,7 +233,13 @@ function scanFile(file) {
   // A path that is simply absent is nothing to read — git lists tracked files that may
   // have been deleted from the working tree — so existence is checked before the
   // boundary, which is about where a file lives rather than whether it is there.
-  if (!existsSync(abs)) return [];
+  if (!existsSync(abs)) {
+    if (args.length) {
+      console.error('secret-scan: explicit input disappeared before read; refusing a partial scan');
+      process.exit(2);
+    }
+    return []; // Git may list tracked files deleted in the working tree.
+  }
   // Then the boundary, for every file, whichever route produced it. The default input
   // set comes from `git ls-files`, which walks through a junction, so a path that reads
   // as inside the repository can still be a file outside it. Checked before

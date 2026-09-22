@@ -1,8 +1,9 @@
 {
   "tests": [
-    "test/client-panel-retry.test.js"
+    "test/client-panel-retry.test.js",
+    "test/review-history-coverage.test.js"
   ],
-  "expectBaselinePass": 10,
+  "expectBaselinePass": 13,
   "mutations": [
     {
       "name": "GPT-08: the rebuilt history stops updating its coverage, so a truncated recovery reports full history",
@@ -12,7 +13,7 @@
       "expectCaught": true
     },
     {
-      "name": "GPT-08: the rebuild truncates by a different rule than the fresh path",
+      "name": "Rebuild budget changes and its decoded wire suffix regresses",
       "file": "src/client.js",
       "anchor": "        const { lines, firstIncluded } = buildHistoryLines(cascadeHistoryBudget(modelUid), 0);",
       "replacement": "        const { lines, firstIncluded } = buildHistoryLines(cascadeHistoryBudget(modelUid) * 4, 0);",

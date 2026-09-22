@@ -1,21 +1,22 @@
 {
   "tests": [
-    "test/workspace-scaffold-ownership.test.js"
+    "test/workspace-scaffold-ownership.test.js",
+    "test/review-scaffold-race.test.js"
   ],
-  "expectBaselinePass": 4,
+  "expectBaselinePass": 7,
   "mutations": [
     {
-      "name": "GPT-01: an existing directory stops being recognised, so the scaffold writes into it again",
+      "name": "Directory acquisition is recursive/nonexclusive: another creator is overwritten",
       "file": "src/client.js",
-      "anchor": "    if (existsSync(workspacePath)) {",
-      "replacement": "    if (false) {",
+      "anchor": "    try { mkdirSync(workspacePath); }",
+      "replacement": "    try { mkdirSync(workspacePath, { recursive: true }); }",
       "expectCaught": true
     },
     {
-      "name": "GPT-01: the migration's rewrite of an existing directory is restored",
+      "name": "A concurrently created stub filename is truncated",
       "file": "src/client.js",
-      "anchor": "    if (existsSync(workspacePath)) {\n      _seededWorkspaces.add(workspacePath);\n      return;\n    }",
-      "replacement": "    if (existsSync(workspacePath)) {\n      writeStubFiles(workspacePath);\n      _seededWorkspaces.add(workspacePath);\n      return;\n    }",
+      "anchor": "  writeFileSync(file, content, { flag: 'wx' });",
+      "replacement": "  writeFileSync(file, content, { flag: 'w' });",
       "expectCaught": true
     },
     {

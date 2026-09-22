@@ -138,3 +138,7 @@ data/self-update-before.pending.json
 # Machine-local; never product
 .DS_Store
 .codegraph/
+
+# Tracked baseline gate runtime dependencies (not audit scratch files).
+!scripts/spec-baseline-evidence.mjs
+!scripts/spec-baseline-platform-skips.json

@@ -44,9 +44,10 @@ describe('GPT-04: a link out of the repository is refused on every input route',
   it('an explicitly named junction that leaves the repository is refused', () => {
     const f = fixture();
     try {
-      writeFileSync(join(f.outside, 'synthetic.log'), `token=${KEY}\n`);
       mkdirSync(join(f.root, 'logs'), { recursive: true });
       symlinkSync(f.outside, join(f.root, 'logs/linked'), 'junction');
+      assert.equal(f.scan('logs/linked').status, 2, 'even an empty external target must be refused before walking it');
+      writeFileSync(join(f.outside, 'synthetic.log'), `token=${KEY}\n`);
 
       const res = f.scan('logs/linked');
       assert.equal(res.status, 2, 'a named junction leaving the repo must be refused, not followed');
@@ -141,6 +142,13 @@ describe('GPT-04: a link out of the repository is refused on every input route',
     try {
       writeFileSync(join(f.outside, 'synthetic.log'), `token=${KEY}\n`);
       mkdirSync(join(f.root, 'logs'), { recursive: true });
+      // Git on POSIX lists an untracked directory symlink itself, not its children.
+      // Pin the child in the index before replacing only this owned fixture directory;
+      // both platforms must expose the same dangerous default input path.
+      mkdirSync(join(f.root, 'logs/linked'));
+      writeFileSync(join(f.root, 'logs/linked/synthetic.log'), '// fixture placeholder');
+      execFileSync('git', ['add', 'logs/linked/synthetic.log'], { cwd: f.root, stdio: 'pipe' });
+      rmSync(join(f.root, 'logs/linked'), { recursive: true, force: true });
       symlinkSync(f.outside, join(f.root, 'logs/linked'), 'junction');
 
       const listed = execFileSync('git', ['ls-files', '-co', '--exclude-standard'], { cwd: f.root, encoding: 'utf8' });

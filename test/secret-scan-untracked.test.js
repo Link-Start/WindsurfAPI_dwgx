@@ -93,6 +93,7 @@ it('an explicit directory argument scans what is inside it, including gitignored
     // the reason, because an exit code alone can be produced by an unrelated guard.
     const sibling = mkdtempSync(join(tmpdir(), 'wa-outside-'));
     try {
+      assert.equal(scan(sibling).status, 2, 'even an empty out-of-root directory is rejected before enumeration');
       writeFileSync(join(sibling, 'leak.js'), `export const value = '${key}';\n`);
       const outside = scan(sibling);
       assert.equal(outside.status, 2, 'a path outside the repo root is an error, not a clean scan');

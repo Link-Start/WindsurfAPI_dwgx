@@ -10,6 +10,7 @@ import https from 'https';
 import { randomUUID, createHash } from 'crypto';
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'fs';
 import { execSync } from 'child_process';
+import { dirname } from 'node:path';
 import { log } from './config.js';
 import { extractImages } from './image.js';
 import { closeSessionForPort, grpcFrame, grpcUnary, grpcStream } from './grpc.js';
@@ -358,10 +359,10 @@ const _seededWorkspaces = new Set();
 // REMOVED (GPT-01): that rewrite deleted `src/` recursively and overwrote
 // package.json / README.md / .gitignore based on a predicate whose whole test was
 // "the name is not the one we write today". Refusing to recognise a file is not
-// evidence that we wrote it, and the property that mattered — no project-shaped
-// placeholder reaches the model wire, and no user content is destroyed — is now
-// carried by writeStubFiles plus the rule that an existing directory is never
-// modified. See test/workspace-scaffold-ownership.test.js.
+// evidence that we wrote it. Fresh directories receive labeled content; existing
+// legacy directories are preserved, not automatically relabeled. This deliberately
+// gives up automatic legacy cleanup rather than risking authored files. See
+// test/workspace-scaffold-ownership.test.js and docs/releases/RELEASE_NOTES_3.9.38.md.
 
 export function ensureWorkspaceDir(workspacePath) {
   if (_seededWorkspaces.has(workspacePath)) return;
@@ -380,7 +381,14 @@ export function ensureWorkspaceDir(workspacePath) {
       _seededWorkspaces.add(workspacePath);
       return;
     }
-    mkdirSync(workspacePath, { recursive: true });
+    // Parent creation grants no ownership of the leaf. A concurrent creator must win
+    // without this call seeding or truncating any of its files.
+    mkdirSync(dirname(workspacePath), { recursive: true });
+    try { mkdirSync(workspacePath); }
+    catch (error) {
+      if (error.code === 'EEXIST') return;
+      throw error;
+    }
     writeStubFiles(workspacePath);
     // Init git repo so LS picks up real git state
     try {
@@ -388,8 +396,8 @@ export function ensureWorkspaceDir(workspacePath) {
         cwd: workspacePath, stdio: 'ignore', timeout: 5000,
       });
     } catch {}
-    // A throw above leaves the path unmarked, so the next call retries instead of
-    // treating a half-written scaffold as done.
+    // Existing or partially created directories are preserved on later calls.
+    // This is non-destructive seeding, not a crash-recoverable migration transaction.
     _seededWorkspaces.add(workspacePath);
     log.info(`Workspace scaffold created: ${workspacePath}`);
   } catch (e) {
@@ -406,16 +414,21 @@ export function ensureWorkspaceDir(workspacePath) {
 // that the LS still indexes a workspace (closes the fingerprint gap)
 // but make every file unmistakably labeled as a proxy placeholder so
 // the model can't confuse it for the user's project.
+function writeOwnedStubFile(file, content) {
+  // The directory claim is not permission to truncate a file created concurrently.
+  writeFileSync(file, content, { flag: 'wx' });
+}
+
 function writeStubFiles(workspacePath) {
-  writeFileSync(`${workspacePath}/package.json`, JSON.stringify({
+  writeOwnedStubFile(`${workspacePath}/package.json`, JSON.stringify({
     name: 'proxy-workspace-stub',
     version: '0.0.0',
     private: true,
     description: 'Empty placeholder created by the WindsurfAPI proxy. NOT the user project — the user\'s real workspace lives on the calling client and is described via the calling agent\'s Environment facts.',
     license: 'UNLICENSED',
   }, null, 2) + '\n');
-  writeFileSync(`${workspacePath}/README.md`, '# Proxy workspace placeholder\n\nThis directory exists only so the Windsurf language server has a workspace to register. It is NOT the user\'s project.\n\nThe user\'s real workspace lives on the calling client (their local IDE / CLI) and its path is communicated through the calling agent\'s Environment facts. To inspect actual files, use Read / Glob / Bash with paths from the Working directory in the Environment facts block.\n');
-  writeFileSync(`${workspacePath}/.gitignore`, '# proxy workspace placeholder — see README.md\n');
+  writeOwnedStubFile(`${workspacePath}/README.md`, '# Proxy workspace placeholder\n\nThis directory exists only so the Windsurf language server has a workspace to register. It is NOT the user\'s project.\n\nThe user\'s real workspace lives on the calling client (their local IDE / CLI) and its path is communicated through the calling agent\'s Environment facts. To inspect actual files, use Read / Glob / Bash with paths from the Working directory in the Environment facts block.\n');
+  writeOwnedStubFile(`${workspacePath}/.gitignore`, '# proxy workspace placeholder — see README.md\n');
 }
 
 // ─── WindsurfClient ────────────────────────────────────────
@@ -836,10 +849,10 @@ export class WindsurfClient {
       const MAX_PANEL_RETRIES = 3;
       const rebuildFullHistoryText = async () => {
         if (!(isResume && convo.length > 1)) return;
-        // The same history, the same budget, the same answer — and now the same coverage
-        // number. The rebuilt cascade receives a truncated history just like the fresh
-        // path, so it must report the same dropped-turn count instead of claiming the
-        // full input still applies.
+        // Share the truncation mechanism and record the rebuilt prompt coverage
+        // number. Fresh includes system-prompt overhead while this historical rebuild
+        // path starts at zero; preserve those existing budgets and report each
+        // actual suffix rather than promising identical counts for every input.
         const { lines, firstIncluded } = buildHistoryLines(cascadeHistoryBudget(modelUid), 0);
         historyCoverage = {
           droppedTurnCount: firstIncluded,

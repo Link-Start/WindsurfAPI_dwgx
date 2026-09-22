@@ -1,153 +1,117 @@
 #!/usr/bin/env node
-// Mutation-spec BASELINE drift check — the half of the mutation gate that no spec can
-// see about itself, and the half that could not run on Windows until now.
-//
-// WHY THIS EXISTS
-//
-// `scripts/spec-static-check.mjs` verifies anchors and spec shape by reading files
-// (~0.3s) and deliberately does not verify the baseline VALUE. That value is only
-// checked by `scripts/spec-baseline-audit.mjs` — which imports
-// `scripts/mutation-harness-utils.mjs`, whose git resolution is a list of POSIX
-// absolute paths, so it throws on Windows and the check never ran here. The mutation
-// harness itself is skipped by the incremental gate for the same reason.
-//
-// The drift it hides is real and already shipped twice: an independent audit found
-// `s4-r4.json` pinned at 8 while its test list measured 9, and `think-text-reroute.json`
-// pinned at 91 while it measured 95. Both were "merge products" — two repair commits
-// added assertions to files other specs already pinned, and neither spec was
-// re-measured. `npm test` cannot see it, because the suite does not run specs.
-//
-// WHAT IT DOES NOT DO
-//
-// It never writes a spec. A drifted number is a decision — the reviewer has to say
-// which side is wrong — so the fix is printed, not applied. An automatic write-back
-// would convert this check into a rubber stamp for exactly the drift it exists to catch.
-//
-// PLATFORM DIFFERENCES ARE NOT DRIFT
-//
-// A spec whose tests are partly skipped on this platform is not wrong here: on Windows
-// `pass + skipped === expectBaselinePass` holds for every spec that differs. Lowering a
-// Unix expectation to match this machine would be the bug, so skipped counts are
-// accepted as an explanation and reported, never applied.
-//
-// Usage:
-//   node scripts/spec-baseline-check.mjs              # specs whose tests changed vs the base
-//   node scripts/spec-baseline-check.mjs --all        # every spec
-//   node scripts/spec-baseline-check.mjs --base <ref> # change comparison base
-//   node scripts/spec-baseline-check.mjs s4-r4.json   # named specs
-//
-// Exit 0: nothing drifted. Exit 1: drift found (the fix is printed). Exit 2: a suite did
-// not produce trustworthy counts, or the selection could not be computed.
-
+// Measure selected mutation baselines from structured runner events, never display text.
+// Approved Windows skips establish count compatibility only, not executed assertions.
+// --all measures every spec; --base <ref> scopes changes; named specs are also supported.
+// Exit 0: measured count-compatible, 1: drift, 2: incomplete/untrustworthy evidence.
 import { readdirSync, readFileSync } from 'node:fs';
 import { spawnSync, execFileSync } from 'node:child_process';
-import { join } from 'node:path';
-import { fileURLToPath } from 'node:url';
+import { join, resolve } from 'node:path';
+import { fileURLToPath, pathToFileURL } from 'node:url';
+import { measureEvidence } from './spec-baseline-evidence.mjs';
 
 const root = fileURLToPath(new URL('..', import.meta.url));
-const argv = process.argv.slice(2);
 
-const all = readdirSync(join(root, 'test/mutations'))
-  .filter(name => name.endsWith('.json'))
-  .sort();
-if (!all.length) {
-  console.error('spec-baseline-check: zero discovered specs — refusing to report a clean sweep');
-  process.exit(2);
+export function parseArgs(argv) {
+  const options = { all: false, base: 'origin/master', named: [] };
+  for (let i = 0; i < argv.length; i++) {
+    const arg = argv[i];
+    if (arg === '--all') { options.all = true; continue; }
+    if (arg === '--base') {
+      const value = argv[++i];
+      if (!value || value.startsWith('-')) throw new Error('--base requires a revision');
+      options.base = value; continue;
+    }
+    if (arg.startsWith('-')) throw new Error(`unknown option: ${arg}`);
+    options.named.push(arg.replace(/\\/g, '/').split('/').pop());
+  }
+  if (options.all && options.named.length) throw new Error('--all and named specs cannot be combined');
+  if (new Set(options.named).size !== options.named.length) throw new Error('duplicate named specs');
+  return options;
 }
 
-const flag = name => argv.includes(name);
-const named = argv.filter(a => !a.startsWith('--'));
-const baseIndex = argv.indexOf('--base');
-const base = baseIndex >= 0 ? argv[baseIndex + 1] : 'origin/master';
-
-function changedFiles(ref) {
-  const out = execFileSync('git', ['diff', '--name-only', `${ref}...HEAD`], { cwd: root, encoding: 'utf8' });
-  const list = out.split('\n').map(s => s.trim()).filter(Boolean);
-  if (!list.length) throw new Error(`no changed files versus ${ref}`);
-  return list;
+function childEnv() {
+  const env = {};
+  const keep = ['PATH', 'Path', 'SystemRoot', 'SYSTEMROOT', 'WINDIR', 'COMSPEC', 'PATHEXT',
+    'HOME', 'USERPROFILE', 'APPDATA', 'LOCALAPPDATA', 'TEMP', 'TMP', 'TMPDIR', 'LANG',
+    'LC_ALL', 'TZ', 'WIRE_BASE_TREE', 'WIRE_BASE_REQUIRED', 'WIRE_BASE_SHA', 'WIRE_BASE_TAG'];
+  for (const key of keep) if (process.env[key] != null) env[key] = process.env[key];
+  return { ...env, NO_COLOR: '1', WINDSURFAPI_SKIP_DOTENV: '1', RELOGIN_LIVE: '0',
+    GIT_TERMINAL_PROMPT: '0', GIT_CONFIG_NOSYSTEM: '1',
+    GIT_CONFIG_GLOBAL: process.platform === 'win32' ? 'NUL' : '/dev/null' };
 }
 
-// Selection: named specs, --all, or the specs whose own test files moved.
-let selected;
-if (named.length) {
-  selected = named.map(n => n.split('/').pop());
-  const unknown = selected.filter(n => !all.includes(n));
-  if (unknown.length) {
-    console.error(`spec-baseline-check: unknown spec(s): ${unknown.join(', ')}`);
-    process.exit(2);
-  }
-} else if (flag('--all')) {
-  selected = all;
-} else {
-  let changed;
-  try {
-    changed = new Set(changedFiles(base));
-  } catch (error) {
-    console.error(`spec-baseline-check: cannot diff against ${base} (${error.message}); use --all or --base <ref>`);
-    process.exit(2);
-  }
-  selected = all.filter(name => {
-    try {
-      const spec = JSON.parse(readFileSync(join(root, 'test/mutations', name), 'utf8'));
-      return (spec.tests || []).some(t => changed.has(t));
-    } catch { return false; }
+function loadSpecs() {
+  const names = readdirSync(join(root, 'test/mutations')).filter(n => n.endsWith('.json')).sort();
+  if (!names.length) throw new Error('zero discovered specs');
+  return names.map(name => {
+    const spec = JSON.parse(readFileSync(join(root, 'test/mutations', name), 'utf8'));
+    if (!Number.isSafeInteger(spec.expectBaselinePass) || spec.expectBaselinePass <= 0) throw new Error(`invalid expectation: ${name}`);
+    if (!Array.isArray(spec.tests) || !spec.tests.length || new Set(spec.tests).size !== spec.tests.length
+        || spec.tests.some(f => typeof f !== 'string' || !/^test\/(?!.*(?:^|\/)\.\.(?:\/|$)).+\.test\.js$/.test(f))) throw new Error(`invalid test plan: ${name}`);
+    return { ...spec, name };
   });
 }
 
-if (!selected.length) {
-  console.log(`spec-baseline-check: no spec covers a file changed versus ${base} — nothing to measure`);
-  process.exit(0);
+function selectSpecs(specs, options, env) {
+  if (options.named.length) {
+    const wanted = new Set(options.named);
+    for (const name of wanted) if (!specs.some(s => s.name === name)) throw new Error(`unknown spec: ${name}`);
+    return specs.filter(s => wanted.has(s.name));
+  }
+  if (options.all) return specs;
+  const git = args => execFileSync('git', args, { cwd: root, env, encoding: 'utf8', maxBuffer: 16 * 1024 * 1024 });
+  const base = git(['rev-parse', '--verify', `${options.base}^{commit}`]).trim();
+  if (!/^[0-9a-f]{40,64}$/.test(base)) throw new Error('invalid resolved base');
+  const changed = new Set([
+    ...git(['diff', '--name-only', '-z', `${base}...HEAD`]).split('\0'),
+    ...git(['diff', '--name-only', '-z', 'HEAD']).split('\0'),
+    ...git(['ls-files', '--others', '--exclude-standard', '-z']).split('\0'),
+  ].filter(Boolean));
+  // Source, helper or runner changes may affect dynamic test registration indirectly.
+  // A synchronized checkout is also measurable; it is not a diff-infrastructure error.
+  if (!changed.size || [...changed].some(f => f.startsWith('src/') || f.startsWith('scripts/')
+      || f === 'test/setup-env.mjs' || (f.startsWith('test/') && !f.startsWith('test/mutations/') && !f.endsWith('.test.js')))) return specs;
+  return specs.filter(s => changed.has(`test/mutations/${s.name}`) || s.tests.some(f => changed.has(f)));
 }
 
-const counts = out => {
-  const read = kind => {
-    const hits = [...out.matchAll(new RegExp(`^\\u2139 ${kind} (\\d+)$`, 'gm'))].map(m => Number(m[1]));
-    return hits.length ? hits[hits.length - 1] : null;
-  };
-  return { pass: read('pass'), fail: read('fail'), skipped: read('skipped') };
-};
-
-let drift = 0;
-let untrustworthy = 0;
-for (const name of selected) {
-  const spec = JSON.parse(readFileSync(join(root, 'test/mutations', name), 'utf8'));
-  const files = spec.tests || [];
-  if (!files.length) {
-    console.log(`FAIL ${name}: no tests listed`);
-    untrustworthy++;
-    continue;
+export function main(argv = process.argv.slice(2)) {
+  const options = parseArgs(argv), env = childEnv();
+  const specs = selectSpecs(loadSpecs(), options, env);
+  const policy = JSON.parse(readFileSync(join(root, 'scripts/spec-baseline-platform-skips.json'), 'utf8'));
+  if (!specs.length) { console.log('spec-baseline-check: no affected specs; no measurement claimed'); return 0; }
+  const reporter = pathToFileURL(join(root, 'scripts/spec-baseline-evidence.mjs')).href;
+  let drift = 0, untrustworthy = 0;
+  const receipts = new Map();
+  for (const spec of specs) {
+    const key = JSON.stringify(spec.tests);
+    let measured = receipts.get(key);
+    if (!measured) {
+      const result = spawnSync(process.execPath, [
+        '--import', './scripts/mutation-network-deny.mjs', '--import', './test/setup-env.mjs',
+        `--test-reporter=${reporter}`, '--test', '--test-concurrency=1', ...spec.tests,
+      ], { cwd: root, env, encoding: 'utf8', timeout: 900000, maxBuffer: 64 * 1024 * 1024 });
+      try { measured = { value: measureEvidence(result, spec.tests, root, policy) }; }
+      catch (error) { measured = { error: error.message }; }
+      receipts.set(key, measured);
+    }
+    if (measured.error) {
+      untrustworthy++;
+      console.log(`UNVERIFIED ${spec.name}: ${measured.error}`);
+      continue;
+    }
+    const value = measured.value;
+    if (value.total !== spec.expectBaselinePass) {
+      drift++;
+      console.log(`DRIFT ${spec.name}: expected=${spec.expectBaselinePass}, measured=${value.pass} pass + ${value.skipped} approved skips = ${value.total}; inspect changes before editing the pin`);
+    } else {
+      console.log(`ok ${spec.name}: ${value.pass} pass + ${value.skipped} approved skips = ${value.total} [${value.disposition}]`);
+    }
   }
-  const result = spawnSync(process.execPath, [
-    '--import', './scripts/mutation-network-deny.mjs',
-    '--import', './test/setup-env.mjs',
-    '--test', ...files,
-  ], { cwd: root, encoding: 'utf8', timeout: 900000, maxBuffer: 256 * 1024 * 1024 });
-  const { pass, fail, skipped } = counts(`${result.stdout || ''}${result.stderr || ''}`);
-  const expected = spec.expectBaselinePass;
-  if (pass == null || fail == null) {
-    console.log(`FAIL ${name}: no structured counts (exit ${result.status})`);
-    untrustworthy++;
-    continue;
-  }
-  if (fail > 0) {
-    console.log(`FAIL ${name}: ${fail} failing test(s) — a spec's baseline cannot be judged on a red suite`);
-    untrustworthy++;
-    continue;
-  }
-  if (pass === expected) {
-    console.log(`ok   ${name}: ${pass} pass${skipped ? ` (+${skipped} skipped on this platform)` : ''}`);
-    continue;
-  }
-  if (pass + skipped === expected) {
-    console.log(`ok   ${name}: ${pass} pass + ${skipped} skipped = ${expected} (platform skips, not drift)`);
-    continue;
-  }
-  drift++;
-  console.log(`DRIFT ${name}: expectBaselinePass is ${expected}, this platform measures ${pass} pass`
-    + `${skipped ? ` + ${skipped} skipped` : ''} and 0 fail.`);
-  console.log(`      fix: set "expectBaselinePass": ${pass + skipped} in test/mutations/${name}`
-    + (skipped ? ' (on a platform that skips nothing)' : ''));
+  console.log(`${specs.length} spec(s) measured, ${drift} drift, ${untrustworthy} untrustworthy`);
+  return untrustworthy ? 2 : drift ? 1 : 0;
 }
 
-console.log(`\n${selected.length} spec(s) measured, ${drift} drift, ${untrustworthy} untrustworthy`);
-process.exit(untrustworthy ? 2 : drift ? 1 : 0);
+if (resolve(process.argv[1] || '') === resolve(fileURLToPath(import.meta.url))) {
+  try { process.exitCode = main(); }
+  catch (error) { console.error(`spec-baseline-check: ${error.message}`); process.exitCode = 2; }
+}
