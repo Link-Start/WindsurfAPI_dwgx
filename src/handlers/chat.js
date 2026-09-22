@@ -6965,10 +6965,12 @@ function streamResponse(id, created, model, modelKey, provider, messages, cascad
           }
 
         });
-        failureStage('dedup-tail', () => {
-          const heldTail = reasoningDedup?.release() ?? '';
-          if (heldTail) emitGatedContent(heldTail);
-        });
+        if (emittedClientPayload) {
+          failureStage('dedup-tail', () => {
+            const heldTail = reasoningDedup?.release() ?? '';
+            if (heldTail) emitGatedContent(heldTail);
+          });
+        }
         failureStage('content-gate-tail', () => flushContentGate());
         if (emittedClientPayload) {
           // Keep the existing synthetic-finish contract on internal routes.
