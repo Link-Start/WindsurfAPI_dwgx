@@ -2,7 +2,7 @@
 
 <p align="center">
   <a href="#最近的版本">最近的版本</a> ·
-  <a href="docs/releases/">全部 188 份发布说明</a> ·
+  <a href="docs/releases/">全部 189 份发布说明</a> ·
   <a href="README.md">← 主 README</a>
 </p>
 
@@ -19,9 +19,9 @@
 
 | | |
 |---|---|
-| 发布说明 | **188** 份,v2.0.6 → v3.9.37 |
+| 发布说明 | **189** 份,v2.0.6 → v3.9.38 |
 | git tag | 199 个 |
-| 当前 | **v3.9.37**(2026-09-17) |
+| 当前 | **v3.9.38**(2026-09-23) |
 | 运行时依赖 | **0** —— 从第一个版本保持到现在 |
 
 ```mermaid
@@ -41,6 +41,17 @@ flowchart LR
 ## 最近的版本
 
 下面是 3.9.x 全系。更早的版本请直接翻 [`docs/releases/`](docs/releases/)。
+
+### [v3.9.38](docs/releases/RELEASE_NOTES_3.9.38.md) · 2026-09-23
+
+独立审计 corrections 轮。**最重要的一条是数据保全**:代理工作区的"旧脚手架迁移"以
+`package.json` 的 `name` 不等于当前 stub 为判据,随后**递归删除 `src/`** 并覆盖
+package.json/README/.gitignore——审计实测一个普通项目名的目录会丢失这三样内容。该迁移整体
+移除:已存在的目录不再被写一个字,只有本调用自建的目录才会被填充。凭据库解码现在要求格式约定
+的 16 字节 GCM tag(标签被截到 4 字节仍能解出密码的问题已修)。密钥扫描改用基于真实路径的
+边界,junction 越界在三条输入路径上都被拒绝(此前显式路径会跟随、父目录会无声跳过、
+`git ls-files` 默认集也会穿过)。恢复路径不再虚报历史覆盖。门禁新增 mutation baseline
+漂移检查,并修掉两份实测过期的 baseline。明确未修:C2 背压、AAD/KDF 迁移、G-2/G-4/G-5。
 
 ### [v3.9.37](docs/releases/RELEASE_NOTES_3.9.37.md) · 2026-09-17
 
