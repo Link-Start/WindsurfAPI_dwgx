@@ -5,27 +5,25 @@
 // byte every 7 s stayed alive indefinitely — bounded only by the 5 MB cap
 // (evidence: .agent/audit-20260922/evidence/probes/a5-image-fetch-deadline/).
 //
-// The real helper runs here against a fake transport substituted at the import
-// boundary (node:http / node:https → test/helpers/fake-image-transport.mjs), with
-// node's mock timers driving the absolute clock, so "7999 ms pending / 8000 ms
-// rejected" is measured rather than wall-clock waited.
+// The real helper runs here against a fake transport installed on the REAL builtin
+// modules (the same seam test/wire-*.test.js use: patch the builtin's export, then
+// syncBuiltinESMExports so the ESM bindings see it), with node's mock timers driving
+// the absolute clock, so "7999 ms pending / 8000 ms rejected" is measured rather than
+// wall-clock waited. src/image.js itself is loaded unchanged — no loader hooks, no
+// flags, no dependency.
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
-import { registerHooks } from 'node:module';
+import { createRequire, syncBuiltinESMExports } from 'node:module';
 
-const TRANSPORT = new URL('./helpers/fake-image-transport.mjs', import.meta.url).href;
-registerHooks({
-  resolve(specifier, context, nextResolve) {
-    const parent = context.parentURL ? new URL(context.parentURL).pathname : '';
-    const fromImage = /[\\/]src[\\/]image\.js$/.test(parent);
-    if (fromImage && (specifier === 'node:http' || specifier === 'node:https')) {
-      return { url: TRANSPORT, shortCircuit: true };
-    }
-    return nextResolve(specifier, context);
-  },
-});
+const transport = await import('./helpers/fake-image-transport.mjs');
 
-const transport = await import(TRANSPORT);
+const require = createRequire(import.meta.url);
+const http = require('node:http');
+const https = require('node:https');
+http.get = transport.get;
+https.get = transport.get;
+syncBuiltinESMExports();
+
 const { fetchImageUrl } = await import('../src/image.js');
 
 const URL_A = 'https://img.example.test/a.png';

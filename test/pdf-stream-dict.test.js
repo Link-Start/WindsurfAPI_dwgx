@@ -109,6 +109,39 @@ describe('A7-PDF: stream dictionary association', () => {
     assert.equal(extractPdfText(buf), TEXT_A);
   });
 
+  it('inflates a Flate stream whose dictionary string holds a balanced nested group and a >> (regression)', () => {
+    // The /Note string contains a BALANCED nested group and a literal '>>'. A scanner
+    // that closes a literal string at the first ')' mistakes that '>>' for the
+    // dictionary end, loses the association, and silently drops the compressed text.
+    const data = flate(TEXT_A);
+    const buf = pdf(objectBlock(
+      1,
+      `/Length ${data.length} /Note (outer (nested) >> still-string) /Filter /FlateDecode`,
+      data,
+    ));
+    assert.equal(extractPdfText(buf), TEXT_A);
+  });
+
+  it('reads a dictionary string holding an escaped paren, a nested group and a >> (control)', () => {
+    // `\)` is escaped and `(c)` is balanced, so the whole string — including the
+    // literal '>>' inside it — ends only at the final ')'; the filter entry after it
+    // still belongs to this stream. A scanner that ignores escapes or nesting sees a
+    // dictionary end inside the string and drops the compressed text.
+    const data = flate(TEXT_A);
+    const buf = pdf(objectBlock(
+      1,
+      `/Length ${data.length} /Note (a \\) >> b (c)) /Filter /FlateDecode`,
+      data,
+    ));
+    assert.equal(extractPdfText(buf), TEXT_A);
+  });
+
+  it('degrades without throwing on an unterminated dictionary string (control)', () => {
+    const body = Buffer.from(content(TEXT_A), 'latin1');
+    const buf = pdf(objectBlock(1, `/Length ${body.length} /Note (unterminated`, body));
+    assert.equal(extractPdfText(buf), TEXT_A);
+  });
+
   it('reads a plain stream with a 700-byte padding entry and no filter (control)', () => {
     const buf = pdf(objectBlock(
       1,

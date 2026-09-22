@@ -6,30 +6,19 @@
 // its SOF at offset 262400 reached jpegDecode with a 50 Mpixel frame
 // (evidence: .agent/audit-20260922/evidence/protocol-probes/, report §E3).
 //
-// The real src/image.js runs here with exactly ONE import boundary replaced — the
-// vendored JPEG decoder — by test/helpers/jpeg-decode-stub.mjs, which counts the
-// call and throws before allocating. No large decode is ever performed; the
-// fixtures are marker-structure only (SOI, APP2 filler, SOF0, APP2 filler, SOS,
-// entropy bytes, EOI), exactly the shape the recorded probe used.
+// The real src/image.js runs here with exactly ONE import boundary redirected — the
+// vendored JPEG decoder — to test/helpers/jpeg-decode-stub.mjs, which counts the call
+// and throws before allocating (see test/helpers/image-codec-seam.mjs, which asserts
+// the single redirection and the untouched module body). No large decode is ever
+// performed; the fixtures are marker-structure only (SOI, APP2 filler, SOF0, APP2
+// filler, SOS, entropy bytes, EOI), exactly the shape the recorded probe used.
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
-import { registerHooks } from 'node:module';
+import { loadImageWithCodecStub } from './helpers/image-codec-seam.mjs';
+import { calls, takeCalls } from './helpers/jpeg-decode-stub.mjs';
 
-const STUB = new URL('./helpers/jpeg-decode-stub.mjs', import.meta.url).href;
-registerHooks({
-  resolve(specifier, context, nextResolve) {
-    const parent = context.parentURL ? new URL(context.parentURL).pathname : '';
-    // Exactly one substitution, and only for the module under test: the relative
-    // vendored-decoder specifier as resolved from src/image.js.
-    if (/[\\/]src[\\/]image\.js$/.test(parent) && /vendor[\\/]jpeg-js[\\/]decoder\.js$/.test(specifier)) {
-      return { url: STUB, shortCircuit: true };
-    }
-    return nextResolve(specifier, context);
-  },
-});
-
-const stub = await import(STUB);
-const { maybeShrinkImage, shrinkPixels, extractImages, readImageDimensions } = await import('../src/image.js');
+const stub = { calls, takeCalls };
+const { maybeShrinkImage, shrinkPixels, extractImages, readImageDimensions } = await loadImageWithCodecStub().then((loaded) => loaded.module);
 
 const HEADER_WINDOW = 256 * 1024;
 const PIXEL_BUDGET = 40 * 1024 * 1024;

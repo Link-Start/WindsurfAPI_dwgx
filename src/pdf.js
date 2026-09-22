@@ -114,13 +114,26 @@ function skipComment(buf, at, limit) {
   return i;
 }
 
-// Index after the literal (…) string starting at `at`; a backslash escapes the
-// next byte, so `\)` does not close it. Unterminated strings run to `limit`.
+// Index after the literal (…) string starting at `at`. PDF literal strings may hold
+// BALANCED nested parentheses — `(outer (nested) still)` is one string — and a
+// backslash escapes the next byte, so only the ')' that closes the group opened here
+// ends the string. Closing at the first ')' instead lets a '>>' inside the string be
+// read as the dictionary end, which loses the stream's dictionary association and
+// silently drops the text. An unterminated string runs to `limit`: nothing after it
+// can be trusted, so the caller degrades to "no dictionary found" rather than guessing.
 function skipLiteralString(buf, at, limit) {
   let i = at + 1;
+  let depth = 1;
   while (i < limit) {
-    if (buf[i] === 0x5c) { i += 2; continue; }
-    if (buf[i] === 0x29) return i + 1;
+    const c = buf[i];
+    if (c === 0x5c) { i += 2; continue; }        // backslash escapes the next byte
+    if (c === 0x28) { depth++; i++; continue; }  // (
+    if (c === 0x29) {                            // )
+      depth--;
+      if (depth === 0) return i + 1;
+      i++;
+      continue;
+    }
     i++;
   }
   return i;

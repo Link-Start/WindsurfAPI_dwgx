@@ -6,31 +6,44 @@
 // caller-supplied X-Forwarded-For verbatim without appending its own socket peer
 // (evidence: .agent/audit-20260922/evidence/probes/f4-https-proxy-policy/).
 //
-// The real https-proxy.js source runs here with its three imports (http2, http,
-// fs) replaced by capture-only fakes, so no certificate is read and no port is
-// bound; the registered handler is driven with tiny fake request/response objects.
+// The real https-proxy.js source runs here with its three imports (http2, http, fs)
+// installed onto the REAL builtin modules as capture-only fakes — the same seam
+// test/wire-*.test.js use (patch the builtin export, then syncBuiltinESMExports) — so
+// no certificate is read from disk and no port is bound; the registered handler is
+// driven with tiny fake request/response objects and the module body runs unchanged.
 import { describe, it, after } from 'node:test';
 import assert from 'node:assert/strict';
-import { registerHooks } from 'node:module';
+import { createRequire, syncBuiltinESMExports } from 'node:module';
 
-const DEPS = new URL('./helpers/fake-proxy-deps.mjs', import.meta.url).href;
-registerHooks({
-  resolve(specifier, context, nextResolve) {
-    const parent = context.parentURL ? new URL(context.parentURL).pathname : '';
-    if (/[\\/]https-proxy\.js$/.test(parent) && (specifier === 'http2' || specifier === 'http' || specifier === 'fs')) {
-      return { url: DEPS, shortCircuit: true };
-    }
-    return nextResolve(specifier, context);
-  },
-});
+const deps = await import('./helpers/fake-proxy-deps.mjs');
 
-const deps = await import(DEPS);
+const require = createRequire(import.meta.url);
+const http2 = require('node:http2');
+const http = require('node:http');
+const fs = require('node:fs');
+http2.createSecureServer = deps.createSecureServer;
+http.request = deps.request;
+// fs needs care: Node's own ESM loader reads module sources through the public
+// fs.readFileSync, so a blanket replacement makes every later import fail. Only the
+// certificate reads are intercepted, and the patch is removed again right after the
+// helper module has been loaded (it reads the certs once, at import time).
+const realReadFileSync = fs.readFileSync;
+fs.readFileSync = function readFileSyncWithFakeCerts(path, ...rest) {
+  if (typeof path === 'string' && path.endsWith('.pem')) return deps.readFileSync(path);
+  return realReadFileSync.call(this, path, ...rest);
+};
+syncBuiltinESMExports();
 
 // The helper logs a line per request; keep the TAP stream readable.
 const realLog = console.log;
 console.log = () => {};
 after(() => { console.log = realLog; });
-await import('../https-proxy.js');
+try {
+  await import('../https-proxy.js');
+} finally {
+  fs.readFileSync = realReadFileSync;
+  syncBuiltinESMExports();
+}
 
 const { trustedClientIp } = await import('../src/net-safety.js');
 const { captured, deliverBackend, reset } = deps;

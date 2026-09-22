@@ -6,8 +6,22 @@
     "test/trace-depth-redaction.test.js",
     "test/https-proxy-policy.test.js"
   ],
-  "expectBaselinePass": 48,
+  "expectBaselinePass": 51,
   "mutations": [
+    {
+      "name": "A7: literal strings close at the first ')' again (nested groups ignored)",
+      "file": "src/pdf.js",
+      "anchor": "    if (c === 0x28) { depth++; i++; continue; }  // (",
+      "replacement": "    if (false && c === 0x28) { depth++; i++; continue; }  // (",
+      "expectCaught": true
+    },
+    {
+      "name": "A7: backslash escapes are no longer honoured inside literal strings",
+      "file": "src/pdf.js",
+      "anchor": "    if (c === 0x5c) { i += 2; continue; }        // backslash escapes the next byte",
+      "replacement": "    if (false && c === 0x5c) { i += 2; continue; }  // backslash escapes the next byte",
+      "expectCaught": true
+    },
     {
       "name": "A7: the 500-byte lookback is restored",
       "file": "src/pdf.js",
