@@ -25,6 +25,13 @@
       "anchor": "        return { lines, firstIncluded };",
       "replacement": "        return { lines, firstIncluded: 0 };",
       "expectCaught": true
+    },
+    {
+      "name": "GPT-08: the rebuilt history is sent newest-first",
+      "file": "src/client.js",
+      "anchor": "          lines.unshift(line);",
+      "replacement": "          lines.push(line);",
+      "expectCaught": true
     }
   ]
 }

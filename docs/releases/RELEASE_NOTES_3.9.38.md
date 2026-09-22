@@ -82,11 +82,12 @@ C2 背压、AAD/KDF 迁移、G-2 SSE 准入、G-4/G-5 诊断保密与保留契�
 
 ## 验证记录及边界
 
-**本版最终树（`fd315b9`，含独立复核的修正）实测**：`npm run gate` 与 `npm test` 均为
-4796 pass / 0 fail / 78 skip，387/387 文件全测量；8 份 spec 的 35 条 mutation 全部判红并在
-精确还原后转绿；80 份 spec 的 baseline 检查 0 漂移、0 不可信；wire 子进程绑定
-`fd315b9 → 4e429fa`，270 次比较。78 个 skip 是机器门禁（POSIX git 夹具 + wire 夹具），
-不是通过。
+**本版最终树实测**（`npm run gate`，含独立复核的修正与随之重锚的锚点）：4797 pass / 0 fail /
+78 skip，387/387 文件全测量；80 份 spec 的 baseline 检查 0 漂移、0 不可信；wire 子进程
+绑定本版 → 前一版 `4e429fa`，270 次比较。独立复核在 `fd315b9` 上跑过 8 份 spec 的 35 条
+mutation，全部判红并在精确还原后转绿；本版新增或重锚的 3 条（独占创建的所有权控制、
+历史顺序、被 allow-list 修复移动的扩展名锚点）各自单独跑过红绿。78 个 skip 是机器门禁
+（POSIX git 夹具 + wire 夹具），不是通过。
 
 omp 原记录同样可复核：4e429fa 的存量 gate 日志为 4761 pass / 0 fail / 78 skip，381/381 文件。
 独立复核重新执行原六份规格的 22 个 mutation，全部判红并在精确还原后转绿。
