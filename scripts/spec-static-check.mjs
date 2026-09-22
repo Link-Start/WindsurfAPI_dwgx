@@ -98,6 +98,37 @@ for (const s of specs) {
       kind: 'baseline-shape',
       detail: `expectBaselinePass must be a number, got ${JSON.stringify(spec.expectBaselinePass)}`,
     });
+  } else {
+    // Declaration bound: a pinned baseline can never be smaller than the number of
+    // `it(`/`test(` sites in the files it covers. Adding an assertion to a covered file
+    // raises that count immediately, so this catches the whole class of baseline drift
+    // that no test can see — the suite does not run specs — without executing anything.
+    // It shipped twice: s4-r4.json was pinned at 8 while its file declared 9, and
+    // think-text-reroute.json at 91 while its files declared 95. Measured across the
+    // tree: 69 of 77 specs are exact, 8 sit below because their tests are generated in
+    // loops, and none exceeded the pin.
+    //
+    // This is a bound, not the measurement: `it.skip` and conditionally registered tests
+    // can make the declared count exceed the pass count legitimately. The exact value is
+    // verified by scripts/spec-baseline-check.mjs (which runs the tests, and runs in the
+    // gate) and by scripts/spec-baseline-audit.mjs (the full sweep).
+    if (Array.isArray(spec.tests)) {
+      let declared = 0;
+      for (const t of spec.tests) {
+        const abs = join(process.cwd(), t);
+        if (!existsSync(abs)) { declared = -1; break; }
+        const source = readFileSync(abs, 'utf8');
+        declared += [...source.matchAll(/^\s*(?:it|test)\s*\(/gm)].length;
+      }
+      if (declared > spec.expectBaselinePass) {
+        problems.push({
+          spec: s.name,
+          kind: 'baseline-drift',
+          detail: `expectBaselinePass is ${spec.expectBaselinePass} but the covered files declare ${declared} tests`,
+          hint: 'a baseline is never smaller than the number of declared tests — re-measure with: node scripts/spec-baseline-check.mjs ' + s.name,
+        });
+      }
+    }
   }
 
   if (!Array.isArray(spec.mutations) || spec.mutations.length === 0) {
