@@ -11,13 +11,23 @@
  *
  * This logic used to live inline in .github/workflows/release.yml, duplicated
  * across the arm64 / x64 / windows jobs, with no way to run it locally before
- * pushing a tag. Same script now backs both.
+ * pushing a tag. The two macOS jobs now call this script; the **Windows job still
+ * carries its own inline PowerShell smoke** (Start-Process + Invoke-WebRequest +
+ * Stop-Process), so this file is the local check for every platform and the CI
+ * check for macOS only. Wiring the Windows job to it would make the two agree —
+ * the file has to keep working there for that to be worth doing.
  *
  * Usage:
  *   node scripts/exe-boot-smoke.mjs [path-to-binary]
  *
  * Default path is the current platform's expected output. Exits non-zero with a
  * diagnostic on failure.
+ *
+ * Note: the binary writes a generated `.env` (API_KEY + DASHBOARD_PASSWORD) next
+ * to itself on first run — see src/config.js. Running this against a build in the
+ * dist directories therefore leaves that file in the build directory; the release
+ * zip names the files it copies, so it is not published, but do not hand-zip the
+ * directory without excluding it.
  */
 
 import { spawn } from 'node:child_process';
@@ -49,8 +59,17 @@ if (process.platform !== 'win32') {
 const dataDir = mkdtempSync(join(tmpdir(), 'wa-smoke-'));
 let child = null;
 
-function cleanup() {
-  if (child && child.exitCode === null) { try { child.kill('SIGKILL'); } catch { /* gone */ } }
+async function cleanup() {
+  if (child && child.exitCode === null) {
+    // Wait for the child to actually go away before the process exits. Killing and
+    // calling process.exit() in the same tick races libuv's handle close on Windows
+    // and aborts the process with `Assertion failed: !(handle->flags &
+    // UV_HANDLE_CLOSING), file src\win\async.c, line 94` — after the smoke has
+    // already printed OK, so a successful run reported exit 9.
+    const gone = new Promise((resolve) => child.once('exit', resolve));
+    try { child.kill('SIGKILL'); } catch { /* already gone */ }
+    await Promise.race([gone, new Promise((resolve) => setTimeout(resolve, 5000))]);
+  }
   try { rmSync(dataDir, { recursive: true, force: true }); } catch { /* best-effort */ }
 }
 
@@ -127,6 +146,12 @@ try {
 } catch (err) {
   console.error(`✖ smoke failed: ${err?.message || err}`);
 } finally {
-  cleanup();
+  await cleanup();
 }
-process.exit(code);
+// Set the code and let the loop drain. `process.exit(code)` here aborted the process
+// with `Assertion failed: !(handle->flags & UV_HANDLE_CLOSING)` (src\win\async.c:94)
+// on Windows because the fetch/child handles were still closing — so a *passing*
+// smoke reported exit 9, which is worse than a failing one: the only way to keep a
+// release moving was to ignore the exit code. The failure paths still exit non-zero,
+// and the child is awaited in cleanup() so the loop cannot hang on it.
+process.exitCode = code;
