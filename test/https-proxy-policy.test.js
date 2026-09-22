@@ -28,10 +28,11 @@ http.request = deps.request;
 // certificate reads are intercepted, and the patch is removed again right after the
 // helper module has been loaded (it reads the certs once, at import time).
 const realReadFileSync = fs.readFileSync;
-fs.readFileSync = function readFileSyncWithFakeCerts(path, ...rest) {
+const fakeCertReadFileSync = function readFileSyncWithFakeCerts(path, ...rest) {
   if (typeof path === 'string' && path.endsWith('.pem')) return deps.readFileSync(path);
   return realReadFileSync.call(this, path, ...rest);
 };
+fs.readFileSync = fakeCertReadFileSync;
 syncBuiltinESMExports();
 
 // The helper logs a line per request; keep the TAP stream readable.
@@ -255,5 +256,36 @@ describe('F4-PROXY: backend CORS policy and client identity', () => {
     assert.deepEqual(Object.keys(captured.serverOptions).sort(), ['allowHTTP1', 'cert', 'key']);
     assert.equal(captured.listen.port, 3443);
     assert.equal(captured.listen.host, '0.0.0.0');
+  });
+
+  // G-7 (second half): "refuses to start without a TLS key". Today that refusal is a
+  // raw ENOENT thrown while the module body builds its options — real, but pinned by
+  // nothing, so a future change that swallows the error would leave an unauthenticated
+  // helper listening. The control below is what makes the refusal meaningful.
+  it('G-7: refuses to start when the TLS key is missing, and does start when it is present', async () => {
+    const listenBefore = captured.listen;
+    fs.readFileSync = function readFileSyncWithoutCerts(path, ...rest) {
+      if (typeof path === 'string' && path.endsWith('.pem')) {
+        const err = new Error(`ENOENT: no such file or directory, open '${path}'`);
+        err.code = 'ENOENT';
+        throw err;
+      }
+      return realReadFileSync.call(fs, path, ...rest);
+    };
+    syncBuiltinESMExports();
+    try {
+      await assert.rejects(
+        () => import('../https-proxy.js?g7-missing-tls-key'),
+        /ENOENT/,
+        'a helper with no certificate must not start',
+      );
+    } finally {
+      fs.readFileSync = fakeCertReadFileSync;
+      syncBuiltinESMExports();
+    }
+    assert.equal(captured.listen, listenBefore, 'the refused start must not have reached listen()');
+
+    await import('../https-proxy.js?g7-present-tls-key');
+    assert.notEqual(captured.listen, listenBefore, 'control: the same body does listen once the key is readable');
   });
 });
