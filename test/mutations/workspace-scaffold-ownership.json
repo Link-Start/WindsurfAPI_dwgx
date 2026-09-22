@@ -1,0 +1,29 @@
+{
+  "tests": [
+    "test/workspace-scaffold-ownership.test.js"
+  ],
+  "expectBaselinePass": 4,
+  "mutations": [
+    {
+      "name": "GPT-01: an existing directory stops being recognised, so the scaffold writes into it again",
+      "file": "src/client.js",
+      "anchor": "    if (existsSync(workspacePath)) {",
+      "replacement": "    if (false) {",
+      "expectCaught": true
+    },
+    {
+      "name": "GPT-01: the migration's rewrite of an existing directory is restored",
+      "file": "src/client.js",
+      "anchor": "    if (existsSync(workspacePath)) {\n      _seededWorkspaces.add(workspacePath);\n      return;\n    }",
+      "replacement": "    if (existsSync(workspacePath)) {\n      writeStubFiles(workspacePath);\n      _seededWorkspaces.add(workspacePath);\n      return;\n    }",
+      "expectCaught": true
+    },
+    {
+      "name": "GPT-01: a new workspace is seeded with a project-shaped package.json instead of the labeled stub",
+      "file": "src/client.js",
+      "anchor": "    name: 'proxy-workspace-stub',",
+      "replacement": "    name: 'workspace-' + Math.random().toString(16).slice(2),",
+      "expectCaught": true
+    }
+  ]
+}

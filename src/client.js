@@ -8,7 +8,7 @@
 
 import https from 'https';
 import { randomUUID, createHash } from 'crypto';
-import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'fs';
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'fs';
 import { execSync } from 'child_process';
 import { log } from './config.js';
 import { extractImages } from './image.js';
@@ -354,44 +354,44 @@ const _seededWorkspaces = new Set();
 // "my-project" or carried a Hello-world src/index.js. On upgrade we
 // rewrite those files in place so the next cascade init re-snapshots
 // the labeled-as-stub version into <workspace_layout>.
-function isLegacyScaffold(workspacePath) {
-  try {
-    const pkgPath = `${workspacePath}/package.json`;
-    if (!existsSync(pkgPath)) return false;
-    const pkg = JSON.parse(readFileSync(pkgPath, 'utf-8'));
-    return pkg?.name !== 'proxy-workspace-stub';
-  } catch {
-    return false;
-  }
-}
+//
+// REMOVED (GPT-01): that rewrite deleted `src/` recursively and overwrote
+// package.json / README.md / .gitignore based on a predicate whose whole test was
+// "the name is not the one we write today". Refusing to recognise a file is not
+// evidence that we wrote it, and the property that mattered — no project-shaped
+// placeholder reaches the model wire, and no user content is destroyed — is now
+// carried by writeStubFiles plus the rule that an existing directory is never
+// modified. See test/workspace-scaffold-ownership.test.js.
 
-function ensureWorkspaceDir(workspacePath) {
+export function ensureWorkspaceDir(workspacePath) {
   if (_seededWorkspaces.has(workspacePath)) return;
   try {
-    const exists = existsSync(workspacePath);
-    if (exists && isLegacyScaffold(workspacePath)) {
-      // Rewrite stub files but leave any other content alone — operator
-      // may have manually placed files in this dir for some reason.
-      try {
-        rmSync(`${workspacePath}/src`, { recursive: true, force: true });
-      } catch {}
-      writeStubFiles(workspacePath);
-      log.info(`Workspace scaffold migrated to #108 stub-labeled form: ${workspacePath}`);
+    // Ownership rule (GPT-01): the only thing this code can prove it owns is what this
+    // call created. The directory name is derived from the account's apiKey hash, but a
+    // path existing says nothing about who wrote its contents — so an existing
+    // directory is left exactly as it is.
+    //
+    // What used to be here was a "legacy scaffold migration": any package.json whose
+    // name was not `proxy-workspace-stub` was taken as an old template, then `src/` was
+    // deleted recursively and package.json / README.md / .gitignore were overwritten.
+    // That is not ownership, it is the absence of recognition. A real project at that
+    // path — or our own old scaffold after the user edited one file — lost data.
+    if (existsSync(workspacePath)) {
       _seededWorkspaces.add(workspacePath);
       return;
     }
-    if (!exists) {
-      mkdirSync(workspacePath, { recursive: true });
-      writeStubFiles(workspacePath);
-      // Init git repo so LS picks up real git state
-      try {
-        execSync('git init -q && git add -A && git commit -q -m "proxy stub" --allow-empty', {
-          cwd: workspacePath, stdio: 'ignore', timeout: 5000,
-        });
-      } catch {}
-      log.info(`Workspace scaffold created: ${workspacePath}`);
-    }
+    mkdirSync(workspacePath, { recursive: true });
+    writeStubFiles(workspacePath);
+    // Init git repo so LS picks up real git state
+    try {
+      execSync('git init -q && git add -A && git commit -q -m "proxy stub" --allow-empty', {
+        cwd: workspacePath, stdio: 'ignore', timeout: 5000,
+      });
+    } catch {}
+    // A throw above leaves the path unmarked, so the next call retries instead of
+    // treating a half-written scaffold as done.
     _seededWorkspaces.add(workspacePath);
+    log.info(`Workspace scaffold created: ${workspacePath}`);
   } catch (e) {
     log.debug(`ensureWorkspaceDir: ${e.message}`);
   }
