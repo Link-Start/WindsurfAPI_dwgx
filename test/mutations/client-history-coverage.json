@@ -1,0 +1,29 @@
+{
+  "tests": [
+    "test/client-panel-retry.test.js"
+  ],
+  "expectBaselinePass": 10,
+  "mutations": [
+    {
+      "name": "GPT-08: the rebuilt history stops updating its coverage, so a truncated recovery reports full history",
+      "file": "src/client.js",
+      "anchor": "        const { lines, firstIncluded } = buildHistoryLines(cascadeHistoryBudget(modelUid), 0);\n        historyCoverage = {\n          droppedTurnCount: firstIncluded,\n          firstIncludedTurnIndex: firstIncluded,\n          totalTurns: convo.length,\n        };",
+      "replacement": "        const { lines, firstIncluded } = buildHistoryLines(cascadeHistoryBudget(modelUid), 0);\n        void firstIncluded;",
+      "expectCaught": true
+    },
+    {
+      "name": "GPT-08: the rebuild truncates by a different rule than the fresh path",
+      "file": "src/client.js",
+      "anchor": "        const { lines, firstIncluded } = buildHistoryLines(cascadeHistoryBudget(modelUid), 0);",
+      "replacement": "        const { lines, firstIncluded } = buildHistoryLines(cascadeHistoryBudget(modelUid) * 4, 0);",
+      "expectCaught": true
+    },
+    {
+      "name": "GPT-08: the coverage count stops matching the truncation rule it reports",
+      "file": "src/client.js",
+      "anchor": "        return { lines, firstIncluded };",
+      "replacement": "        return { lines, firstIncluded: 0 };",
+      "expectCaught": true
+    }
+  ]
+}

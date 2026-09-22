@@ -762,22 +762,20 @@ export class WindsurfClient {
       // path doesn't replay history (cascade still has it), so coverage =
       // full input; fresh path may truncate large histories.
       let historyCoverage = { droppedTurnCount: 0, firstIncludedTurnIndex: 0, totalTurns: convo.length };
-      if (isResume || convo.length <= 1) {
-        const last = convo[convo.length - 1];
-        const extracted = await extractImages(last?.content ?? '');
-        text = extracted.text;
-        images = extracted.images;
-        if (!isResume && sysText) text = sysText + '\n\n' + text;
-      } else {
-        const maxHistoryBytes = cascadeHistoryBudget(modelUid);
+      // GPT-08: one computation for "which turns fit the prompt", shared by the fresh
+      // path and the post-resume-rebuild path. They used to disagree — the rebuild
+      // truncated the same history without updating historyCoverage, so a request that
+      // started as a resume reported full coverage while the wire carried a truncated
+      // history. The prompt text is unchanged; only the bookkeeping is now common.
+      const buildHistoryLines = (budgetBytes, openingBytes) => {
         const lines = [];
-        let historyBytes = sysText ? sysText.length : 0;
+        let historyBytes = openingBytes;
         let firstIncluded = 0;
         for (let i = convo.length - 2; i >= 0; i--) {
           const m = convo[i];
           const tag = m.role === 'user' ? 'human' : 'assistant';
           const line = `<${tag}>\n${escapeHistoryTag(contentToString(m.content), tag)}\n</${tag}>`;
-          if (historyBytes + line.length > maxHistoryBytes && lines.length > 0) {
+          if (historyBytes + line.length > budgetBytes && lines.length > 0) {
             log.info(`Cascade: trimmed history at turn ${i}/${convo.length} (${Math.round(historyBytes/1024)}KB kept, ${convo.length - 2 - i} turns dropped)`);
             firstIncluded = i + 1;
             break;
@@ -786,6 +784,17 @@ export class WindsurfClient {
           historyBytes += line.length;
           firstIncluded = i;
         }
+        return { lines, firstIncluded };
+      };
+      if (isResume || convo.length <= 1) {
+        const last = convo[convo.length - 1];
+        const extracted = await extractImages(last?.content ?? '');
+        text = extracted.text;
+        images = extracted.images;
+        if (!isResume && sysText) text = sysText + '\n\n' + text;
+      } else {
+        const maxHistoryBytes = cascadeHistoryBudget(modelUid);
+        const { lines, firstIncluded } = buildHistoryLines(maxHistoryBytes, sysText ? sysText.length : 0);
         historyCoverage = {
           droppedTurnCount: firstIncluded,
           firstIncludedTurnIndex: firstIncluded,
@@ -827,17 +836,16 @@ export class WindsurfClient {
       const MAX_PANEL_RETRIES = 3;
       const rebuildFullHistoryText = async () => {
         if (!(isResume && convo.length > 1)) return;
-        const maxHistoryBytes = cascadeHistoryBudget(modelUid);
-        const lines = [];
-        let historyBytes = 0;
-        for (let i = convo.length - 2; i >= 0; i--) {
-          const m = convo[i];
-          const tag = m.role === 'user' ? 'human' : 'assistant';
-          const line = `<${tag}>\n${escapeHistoryTag(contentToString(m.content), tag)}\n</${tag}>`;
-          if (historyBytes + line.length > maxHistoryBytes && lines.length > 0) break;
-          lines.unshift(line);
-          historyBytes += line.length;
-        }
+        // The same history, the same budget, the same answer — and now the same coverage
+        // number. The rebuilt cascade receives a truncated history just like the fresh
+        // path, so it must report the same dropped-turn count instead of claiming the
+        // full input still applies.
+        const { lines, firstIncluded } = buildHistoryLines(cascadeHistoryBudget(modelUid), 0);
+        historyCoverage = {
+          droppedTurnCount: firstIncluded,
+          firstIncludedTurnIndex: firstIncluded,
+          totalTurns: convo.length,
+        };
         const latest = convo[convo.length - 1];
         const extracted = await extractImages(latest?.content ?? '');
         text = `The following is a multi-turn conversation. You MUST remember and use all information from prior turns.\n\n${lines.join('\n\n')}\n\n<human>\n${extracted.text}\n</human>`;
