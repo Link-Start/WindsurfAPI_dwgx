@@ -28,7 +28,13 @@ function resolveInsideRepo(absPath) {
 }
 
 function refuseOutside(what, absPath) {
-  console.error(`secret-scan: ${what} resolves outside ${root} or cannot be resolved (${absPath}) — refusing to report a scan that did not cover its input`);
+  // Two different failures used to share one sentence, so an operator (or a test
+  // matching /resolves outside/) could not tell a boundary violation from a path that
+  // simply could not be resolved. Say which one fired.
+  const why = existsSync(absPath)
+    ? `resolves outside ${root}`
+    : `cannot be resolved (nothing at that path)`;
+  console.error(`secret-scan: ${what} ${why} (${absPath}) — refusing to report a scan that did not cover its input`);
   process.exit(2);
 }
 
@@ -147,13 +153,30 @@ function toRepoPath(file) {
   return relative(root, resolve(root, file)).split(sep).join('/');
 }
 
+/**
+ * The spelling a file is reached by is not its identity: a link inside the repo can
+ * name an ignored file through a path the allow-lists below do not know, and following
+ * that link would then report the scanner's own source (which carries a key-shaped
+ * fixture string) as a finding. Decide the allow-lists on the resolved path, so
+ * ignoring is a property of the file rather than of the route taken to it.
+ */
+function resolvedRepoPath(file) {
+  try {
+    return relative(rootReal, realpathSync(file)).split(sep).join('/');
+  } catch {
+    return toRepoPath(file);
+  }
+}
+
 function isIgnored(file) {
   const repoPath = toRepoPath(file);
   if (!repoPath || (repoPath === '..' || repoPath.startsWith('../')) || repoPath.includes('\0')) return true;
-  if (IGNORED_PATHS.has(repoPath)) return true;
-  if (IGNORED_PREFIXES.some(prefix => repoPath.startsWith(prefix))) return true;
+  const resolved = resolvedRepoPath(file);
+  if (IGNORED_PATHS.has(repoPath) || IGNORED_PATHS.has(resolved)) return true;
+  if (IGNORED_PREFIXES.some(prefix => repoPath.startsWith(prefix) || resolved.startsWith(prefix))) return true;
   const lower = repoPath.toLowerCase();
-  return [...IGNORED_EXTENSIONS].some(ext => lower.endsWith(ext));
+  const lowerResolved = resolved.toLowerCase();
+  return [...IGNORED_EXTENSIONS].some(ext => lower.endsWith(ext) || lowerResolved.endsWith(ext));
 }
 
 function trackedFiles() {
@@ -182,7 +205,16 @@ function expandInput(entry) {
   // its target is not, and a path on another Windows drive makes path.relative return an
   // absolute path instead of '..'.
   if (!resolveInsideRepo(abs)) refuseOutside(entry, abs);
-  if (!statSync(abs).isDirectory()) return [entry];
+  let isDirEntry;
+  try {
+    isDirEntry = statSync(abs).isDirectory();
+  } catch (e) {
+    // Removed between the existence check and here: a partial scan is not a clean scan,
+    // and a race must not masquerade as exit 1 (the code reserved for findings).
+    console.error(`secret-scan: ${toRepoPath(abs)} disappeared before it could be read (${e?.code || e?.message}) — refusing a partial scan`);
+    process.exit(2);
+  }
+  if (!isDirEntry) return [entry];
   const files = [];
   const seen = new Set([resolveInsideRepo(abs)]);
   const walk = (dir) => {
@@ -250,12 +282,15 @@ function scanFile(file) {
   const text = readFileSync(abs, 'utf8');
   const findings = [];
   const repoPath = toRepoPath(file);
+  // Same reasoning as isIgnored(): a test fixture reached through an inside link is
+  // still a test fixture, so the exemption follows the resolved path.
+  const fixturePath = resolvedRepoPath(file);
   for (const rule of RULES) {
     rule.regex.lastIndex = 0;
     for (const match of text.matchAll(rule.regex)) {
       // Fixtures under test/ are exempt only when the matched text itself looks
       // synthetic. A real-looking secret in a test file is still a finding.
-      if (isSyntheticFixture(repoPath, match[0])) continue;
+      if (isSyntheticFixture(repoPath, match[0]) || isSyntheticFixture(fixturePath, match[0])) continue;
       findings.push({
         path: repoPath,
         line: lineForOffset(text, match.index || 0),
