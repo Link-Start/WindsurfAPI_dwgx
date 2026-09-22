@@ -6,7 +6,7 @@
     "test/trace-depth-redaction.test.js",
     "test/https-proxy-policy.test.js"
   ],
-  "expectBaselinePass": 51,
+  "expectBaselinePass": 52,
   "mutations": [
     {
       "name": "A7: literal strings close at the first ')' again (nested groups ignored)",

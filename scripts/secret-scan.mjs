@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 import { execFileSync } from 'node:child_process';
 import { existsSync, readdirSync, readFileSync, statSync } from 'node:fs';
-import { join, relative, resolve, sep } from 'node:path';
+import { isAbsolute, join, relative, resolve, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const root = resolve(fileURLToPath(new URL('..', import.meta.url)));
@@ -150,6 +150,14 @@ function expandInput(entry) {
   const abs = resolve(root, entry);
   if (!existsSync(abs)) {
     console.error(`secret-scan: ${entry} does not exist — refusing to report a path that was never read as clean`);
+    process.exit(2);
+  }
+  // The scanner's subject is this repository. A path outside it (including one on
+  // another Windows drive, where path.relative returns an absolute path instead of
+  // '..') would be dropped by isIgnored() and reported as a clean scan.
+  const rel = relative(root, abs);
+  if (rel.startsWith('..') || isAbsolute(rel)) {
+    console.error(`secret-scan: ${entry} is outside ${root} — refusing to report a path that was never read as clean`);
     process.exit(2);
   }
   if (!statSync(abs).isDirectory()) return [entry];

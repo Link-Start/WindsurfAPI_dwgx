@@ -88,6 +88,16 @@ it('an explicit directory argument scans what is inside it, including gitignored
     // same defect as the dropped directory argument, one layer out.
     assert.equal(scan('no-such-directory').status, 2, 'a missing path is an error, not a clean scan');
     assert.equal(scan('logs/app-2026-09-22.jsonl', 'no-such-file.js').status, 2);
+    // Nor may a path outside the repository: isIgnored() drops it as '..', which would
+    // turn "scan that directory over there" into a clean verdict. The assertion names
+    // the reason, because an exit code alone can be produced by an unrelated guard.
+    const sibling = mkdtempSync(join(tmpdir(), 'wa-outside-'));
+    try {
+      writeFileSync(join(sibling, 'leak.js'), `export const value = '${key}';\n`);
+      const outside = scan(sibling);
+      assert.equal(outside.status, 2, 'a path outside the repo root is an error, not a clean scan');
+      assert.match(outside.stderr, /is outside/, 'and the reason must be the repository boundary');
+    } finally { rmSync(sibling, { recursive: true, force: true }); }
     assert.equal(scan('logs').status, 0, 'a later valid scan is unaffected');
   } finally { rmSync(root, { recursive: true, force: true }); }
 });
