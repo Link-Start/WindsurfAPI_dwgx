@@ -148,10 +148,21 @@ function trackedFiles() {
 // directory is the only way an operator can ask.
 function expandInput(entry) {
   const abs = resolve(root, entry);
-  if (!existsSync(abs) || !statSync(abs).isDirectory()) return [entry];
+  if (!existsSync(abs)) {
+    console.error(`secret-scan: ${entry} does not exist — refusing to report a path that was never read as clean`);
+    process.exit(2);
+  }
+  if (!statSync(abs).isDirectory()) return [entry];
   const files = [];
   const walk = (dir) => {
-    for (const dirent of readdirSync(dir, { withFileTypes: true })) {
+    let entries;
+    try {
+      entries = readdirSync(dir, { withFileTypes: true });
+    } catch (e) {
+      console.error(`secret-scan: cannot read ${toRepoPath(dir)} (${e?.code || e?.message}) — a partial scan is not a clean scan`);
+      process.exit(2);
+    }
+    for (const dirent of entries) {
       const full = join(dir, dirent.name);
       if (dirent.isDirectory()) walk(full);
       else if (dirent.isFile()) files.push(toRepoPath(full));

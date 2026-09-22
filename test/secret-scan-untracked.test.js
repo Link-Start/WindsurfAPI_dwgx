@@ -83,5 +83,11 @@ it('an explicit directory argument scans what is inside it, including gitignored
     writeFileSync(join(root, 'logs/nested/deep.log'), 'token=clean\n');
     assert.equal(scan('logs').status, 0);
     assert.equal(scan('logs', 'tracked.js').status, 0, 'a directory and a file can be mixed');
+
+    // A named path that cannot be read must never be reported as clean: that is the
+    // same defect as the dropped directory argument, one layer out.
+    assert.equal(scan('no-such-directory').status, 2, 'a missing path is an error, not a clean scan');
+    assert.equal(scan('logs/app-2026-09-22.jsonl', 'no-such-file.js').status, 2);
+    assert.equal(scan('logs').status, 0, 'a later valid scan is unaffected');
   } finally { rmSync(root, { recursive: true, force: true }); }
 });
