@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 import { execFileSync } from 'node:child_process';
-import { existsSync, readFileSync, statSync } from 'node:fs';
-import { relative, resolve, sep } from 'node:path';
+import { existsSync, readdirSync, readFileSync, statSync } from 'node:fs';
+import { join, relative, resolve, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const root = resolve(fileURLToPath(new URL('..', import.meta.url)));
@@ -140,8 +140,29 @@ function trackedFiles() {
   return [...new Set(output.split('\0').filter(Boolean))];
 }
 
+// An explicit path means "scan this", and a directory means "scan what is inside it".
+// Before this, a directory argument was silently dropped by scanFile's regular-file
+// check, so `secret-scan logs` scanned zero files and exited 0 — a guard that read as
+// "checked, clean". The runtime paths that hold raw credentials (.wire-dump/, .trace/,
+// logs/) are gitignored, so the default input set can never reach them; naming the
+// directory is the only way an operator can ask.
+function expandInput(entry) {
+  const abs = resolve(root, entry);
+  if (!existsSync(abs) || !statSync(abs).isDirectory()) return [entry];
+  const files = [];
+  const walk = (dir) => {
+    for (const dirent of readdirSync(dir, { withFileTypes: true })) {
+      const full = join(dir, dirent.name);
+      if (dirent.isDirectory()) walk(full);
+      else if (dirent.isFile()) files.push(toRepoPath(full));
+    }
+  };
+  walk(abs);
+  return files;
+}
+
 function inputFiles() {
-  if (args.length) return args;
+  if (args.length) return args.flatMap(expandInput);
   return trackedFiles();
 }
 
