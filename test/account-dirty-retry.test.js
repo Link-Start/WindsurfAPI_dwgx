@@ -217,6 +217,26 @@ describe('accounts.json dirty bookkeeping — persistence outcome owns the retry
     assert.equal(requestsOnDisk(KEY(4)), 1, 'the retry landed on disk');
   });
 
+  it('marks a clean pool dirty when a direct saveAccountsSync fails, and a later flush retries', () => {
+    createAccount(KEY(6));
+    assert.equal(__isAccountsDirty(), false, 'precondition: clean pool, nothing pending');
+
+    armed.writeEio = true;
+    saveAccountsSync();                          // direct sync save of an already-clean pool
+
+    assert.equal(armed.writeEio, false, 'the injected EIO was consumed by the real write');
+    assert.equal(__isAccountsDirty(), true, 'a failed sync save from a clean pool must leave the pool dirty');
+    assert.equal(accountOnDisk(KEY(6))?.apiKey, KEY(6), 'the previously published account is untouched');
+
+    // No new mutation is needed: the ordinary dirty flush is the retry.
+    const renamesBefore = stats.renames.length;
+    __flushDirtyAccounts();
+    assert.equal(stats.renames.length, renamesBefore + 1, 'the retry published the current memory');
+    assert.equal(__isAccountsDirty(), false, 'and cleared the flag');
+    assert.equal(accountOnDisk(KEY(6))?.apiKey, KEY(6), 'the account survives the rewrite');
+    assert.deepEqual(pendingTemps(), []);
+  });
+
   it('keeps the retry signal when the parent-directory fsync fails after a published rename', () => {
     createAccount(KEY(5));
     recordAccountSpend(KEY(5), spend(9, 1, 10));
