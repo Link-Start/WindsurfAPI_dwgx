@@ -89,6 +89,27 @@ describe('GPT-01: workspace scaffold only ever touches what it created', () => {
     } finally { rmSync(root, { recursive: true, force: true }); }
   });
 
+  it('a directory holding only files we did not write is left alone, even when none of them collide (control)', () => {
+    // The other ownership tests use directories that already contain a package.json, so
+    // the `wx` stub writes stop at the first collision and the behaviour looks identical
+    // whether or not the existing-directory guard is present. This case removes that
+    // ambiguity: nothing in here shares a name with a stub file, so only the guard can
+    // keep the directory byte-identical. Without it the scaffold seeds three files into
+    // somebody else's directory.
+    const root = tempWorkspace();
+    try {
+      writeFileSync(join(root, 'notes.txt'), 'hand-written notes\n');
+      mkdirSync(join(root, 'src'), { recursive: true });
+      writeFileSync(join(root, 'src/app.js'), 'export const keep = true;\n');
+      const before = snapshot(root);
+
+      ensureWorkspaceDir(root);
+
+      assert.deepEqual(snapshot(root), before, 'a directory we did not create must not be seeded, colliding names or not');
+      assert.ok(!existsSync(join(root, 'package.json')), 'no stub package.json may appear in a directory we did not create');
+    } finally { rmSync(root, { recursive: true, force: true }); }
+  });
+
   it('a path that does not exist still gets the labeled stub', () => {
     const root = tempWorkspace();
     const target = join(root, 'workspace-abc123');

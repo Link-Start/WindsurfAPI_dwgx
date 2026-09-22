@@ -55,6 +55,12 @@ async function exercise({ recovered, system = '', size = 170, intact = false }) 
       assert.ok(included.length > 0);
       const first = included[0];
       assert.deepEqual(included, Array.from({ length: 5 - first }, (_, i) => first + i), 'wire carries a contiguous history suffix');
+      // Order, not just presence: the wire must carry the history oldest-first. Turning
+      // the builder's `lines.unshift(...)` into a push reverses it while every
+      // presence/contiguity assertion above still passes, and turn order is
+      // semantically load-bearing for the model.
+      const positions = included.map(i => wire.indexOf(`TURN_${i}_MARKER`));
+      assert.deepEqual(positions, [...positions].sort((a, b) => a - b), 'history turns appear in chronological order on the wire');
       assert.deepEqual(chunks.historyCoverage, { droppedTurnCount: first, firstIncludedTurnIndex: first, totalTurns: 5 }, 'metadata equals decoded prompt contents, not another return value');
     }
     return { coverage: chunks.historyCoverage, wire };

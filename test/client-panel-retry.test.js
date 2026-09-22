@@ -455,7 +455,12 @@ describe('WindsurfClient cascade panel retry', () => {
     // An independent audit (2026-09-22) found the recovery path reporting full coverage
     // for a truncated history: the fresh branch updated historyCoverage, the resume
     // rebuild truncated the same history without updating it, and the stale value was
-    // returned verbatim. Same history and same budget must give the same answer.
+    // returned verbatim. In THIS fixture both paths open with zero bytes of system
+    // prompt, so the same history and budget must give the same answer — that is a
+    // property of this input, not a general rule: with a system prompt present the fresh
+    // path counts its length and the rebuilt path does not, so the two coverage values
+    // legitimately differ. See test/review-history-coverage.test.js, which pins each
+    // path against the turns actually present in the encoded request.
     const budget = 1024;
     const prevBudget = process.env.CASCADE_MAX_HISTORY_BYTES;
     process.env.CASCADE_MAX_HISTORY_BYTES = String(budget);
@@ -549,7 +554,7 @@ describe('WindsurfClient cascade panel retry', () => {
       assert.deepEqual(
         recovered.historyCoverage,
         fresh.historyCoverage,
-        'the recovered cascade receives the same truncated history, so its coverage must match the fresh path exactly',
+        'with no system prompt both paths send the same truncated history, so their coverage must agree',
       );
     } finally {
       if (prevBudget === undefined) delete process.env.CASCADE_MAX_HISTORY_BYTES;
