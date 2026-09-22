@@ -1,11 +1,33 @@
 #!/usr/bin/env node
 import { execFileSync } from 'node:child_process';
-import { existsSync, readdirSync, readFileSync, statSync } from 'node:fs';
+import { existsSync, readdirSync, readFileSync, realpathSync, statSync } from 'node:fs';
 import { isAbsolute, join, relative, resolve, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const root = resolve(fileURLToPath(new URL('..', import.meta.url)));
+// The repository's REAL path. A lexical `relative()` check is defeated by a reparse
+// point — a junction or symlink whose path reads as inside the repository while its
+// target is elsewhere — and all three input routes have to share one boundary: a named
+// path, the recursive walk, and `git ls-files` (what a bare `secret-scan` scans, and
+// what `scripts/local-gate.mjs` runs on every push; git lists through a junction too).
+const rootReal = realpathSync(root);
 const args = process.argv.slice(2);
+
+// Resolve a path and decide whether it is inside the repository. Returns the real path,
+// or null when it escapes / cannot be resolved (broken link, unreadable parent).
+function resolveInsideRepo(absPath) {
+  let real;
+  try { real = realpathSync(absPath); } catch { return null; }
+  const rel = relative(rootReal, real);
+  if (rel === '') return real;                       // the repository root itself
+  if (rel.startsWith('..') || isAbsolute(rel)) return null;
+  return real;
+}
+
+function refuseOutside(what, absPath) {
+  console.error(`secret-scan: ${what} resolves outside ${root} (${absPath}) — refusing to report a scan that did not cover its input`);
+  process.exit(2);
+}
 
 const RULES = [
   {
@@ -152,16 +174,14 @@ function expandInput(entry) {
     console.error(`secret-scan: ${entry} does not exist — refusing to report a path that was never read as clean`);
     process.exit(2);
   }
-  // The scanner's subject is this repository. A path outside it (including one on
-  // another Windows drive, where path.relative returns an absolute path instead of
-  // '..') would be dropped by isIgnored() and reported as a clean scan.
-  const rel = relative(root, abs);
-  if (rel.startsWith('..') || isAbsolute(rel)) {
-    console.error(`secret-scan: ${entry} is outside ${root} — refusing to report a path that was never read as clean`);
-    process.exit(2);
-  }
+  // The scanner's subject is this repository. The check is on the REAL path for the same
+  // reason the walk below needs it: a junction's own path looks like it is inside while
+  // its target is not, and a path on another Windows drive makes path.relative return an
+  // absolute path instead of '..'.
+  if (!resolveInsideRepo(abs)) refuseOutside(entry, abs);
   if (!statSync(abs).isDirectory()) return [entry];
   const files = [];
+  const seen = new Set([rootReal]);
   const walk = (dir) => {
     let entries;
     try {
@@ -172,8 +192,20 @@ function expandInput(entry) {
     }
     for (const dirent of entries) {
       const full = join(dir, dirent.name);
-      if (dirent.isDirectory()) walk(full);
-      else if (dirent.isFile()) files.push(toRepoPath(full));
+      const real = resolveInsideRepo(full);
+      if (real === null) {
+        // A link out of the repository is not a file to skip quietly: "we never looked
+        // there" must never read as "we looked and it was clean".
+        if (dirent.isSymbolicLink()) refuseOutside(toRepoPath(full), full);
+        continue;
+      }
+      // A link that stays inside is followed, and its real path is remembered so a
+      // cycle cannot make the walk loop.
+      if (seen.has(real)) continue;
+      let isDir = false;
+      try { isDir = statSync(real).isDirectory(); } catch { continue; }
+      if (isDir) { seen.add(real); walk(full); }
+      else files.push(toRepoPath(full));
     }
   };
   walk(abs);
@@ -194,9 +226,18 @@ function lineForOffset(text, offset) {
 }
 
 function scanFile(file) {
-  if (isIgnored(file)) return [];
   const abs = resolve(root, file);
-  if (!existsSync(abs) || !statSync(abs).isFile()) return [];
+  // A path that is simply absent is nothing to read — git lists tracked files that may
+  // have been deleted from the working tree — so existence is checked before the
+  // boundary, which is about where a file lives rather than whether it is there.
+  if (!existsSync(abs)) return [];
+  // Then the boundary, for every file, whichever route produced it. The default input
+  // set comes from `git ls-files`, which walks through a junction, so a path that reads
+  // as inside the repository can still be a file outside it. Checked before
+  // isIgnored() so nothing can be dropped — and therefore reported as clean — first.
+  if (!resolveInsideRepo(abs)) refuseOutside(file, abs);
+  if (isIgnored(file)) return [];
+  if (!statSync(abs).isFile()) return [];
   const text = readFileSync(abs, 'utf8');
   const findings = [];
   const repoPath = toRepoPath(file);

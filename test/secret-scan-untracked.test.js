@@ -96,7 +96,7 @@ it('an explicit directory argument scans what is inside it, including gitignored
       writeFileSync(join(sibling, 'leak.js'), `export const value = '${key}';\n`);
       const outside = scan(sibling);
       assert.equal(outside.status, 2, 'a path outside the repo root is an error, not a clean scan');
-      assert.match(outside.stderr, /is outside/, 'and the reason must be the repository boundary');
+      assert.match(outside.stderr, /resolves outside/, 'and the reason must be the repository boundary');
     } finally { rmSync(sibling, { recursive: true, force: true }); }
     assert.equal(scan('logs').status, 0, 'a later valid scan is unaffected');
   } finally { rmSync(root, { recursive: true, force: true }); }
