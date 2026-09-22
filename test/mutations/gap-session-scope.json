@@ -2,7 +2,7 @@
   "tests": [
     "test/caller-key-session-scope.test.js"
   ],
-  "expectBaselinePass": 4,
+  "expectBaselinePass": 6,
   "mutations": [
     {
       "name": "G-1: the session header outranks a presented API key in the caller-key ladder",
@@ -23,6 +23,13 @@
       "file": "src/handlers/chat.js",
       "anchor": "  if (callerKey.startsWith('session:')) return true;",
       "replacement": "  if (callerKey.startsWith('session:')) return false;",
+      "expectCaught": true
+    },
+    {
+      "name": "GPT-07: the outer API-key gate stops refusing, so /v1 routes are reached unauthenticated",
+      "file": "src/server.js",
+      "anchor": "  if (!validateApiKey(extractToken(req))) {",
+      "replacement": "  if (false && !validateApiKey(extractToken(req))) {",
       "expectCaught": true
     }
   ]
