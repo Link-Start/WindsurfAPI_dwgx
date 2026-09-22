@@ -1,0 +1,29 @@
+{
+  "tests": [
+    "test/devin-connect-credentials.test.js"
+  ],
+  "expectBaselinePass": 20,
+  "mutations": [
+    {
+      "name": "GPT-05: the tag-shape guard is removed, so a truncated tag authenticates again",
+      "file": "src/devin-connect-credentials.js",
+      "anchor": "    if (typeof tagHex !== 'string' || tagHex.length !== GCM_TAG_BYTES * 2) {",
+      "replacement": "    if (false) {",
+      "expectCaught": true
+    },
+    {
+      "name": "GPT-05: the format's tag size is widened to 4 bytes, so a truncated tag is in-format",
+      "file": "src/devin-connect-credentials.js",
+      "anchor": "const GCM_TAG_BYTES = 16;",
+      "replacement": "const GCM_TAG_BYTES = 4;",
+      "expectCaught": true
+    },
+    {
+      "name": "GPT-05: the decoded tag length is no longer checked (invalid hex becomes a short tag)",
+      "file": "src/devin-connect-credentials.js",
+      "anchor": "    if (tag.length !== GCM_TAG_BYTES) {",
+      "replacement": "    if (false) {",
+      "expectCaught": true
+    }
+  ]
+}
