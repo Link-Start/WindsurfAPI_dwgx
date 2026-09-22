@@ -162,7 +162,7 @@ function toRepoPath(file) {
  */
 function resolvedRepoPath(file) {
   try {
-    return relative(rootReal, realpathSync(file)).split(sep).join('/');
+    return relative(rootReal, realpathSync(resolve(root, file))).split(sep).join('/');
   } catch {
     return toRepoPath(file);
   }
