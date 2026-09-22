@@ -1651,7 +1651,7 @@ export async function handleMessages(body, context = {}) {
   // do not send metadata.user_id keep the original callerKey unchanged.
   const subKey = extractCallerSubKey(body);
   const alreadyUserScoped = context.callerKey && context.callerKey.includes(':user:');
-  const effectiveContext = (subKey && !alreadyUserScoped)
+  const scopedContext = (subKey && !alreadyUserScoped)
     ? {
         ...context,
         callerKey: `${context.callerKey || ''}:user:${subKey}`,
@@ -1660,6 +1660,7 @@ export async function handleMessages(body, context = {}) {
           : context.nativeBridgeCallerKey,
       }
     : context;
+  const effectiveContext = { ...scopedContext, __messagesStopCarrier: true };
   // T2: the captured incoming thinking rides the body as __incomingThinking
   // (single __-prefixed carrier, same convention as __route); chat.js reads it
   // as a fallback continuity-store source when the outbound response has none.

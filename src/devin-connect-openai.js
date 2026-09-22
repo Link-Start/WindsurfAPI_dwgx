@@ -522,6 +522,14 @@ export async function toChatCompletion(params, opts = {}) {
     }
   }
 
+  // Promotion creates visible prose after the first gate. Gate it at this final boundary.
+  if (promotedReasoning) {
+    const stopped = applyStop(content, stop);
+    content = stopped.text;
+    if (stopped.hit) { matchedStop = stopped.stop; stopHit = true; }
+    if (stopHit && !toolCalls.length) finishReason = 'stop';
+  }
+
   // OpenAI convention: content is a string (may be empty), never undefined.
   const message = { role: 'assistant', content: content || '' };
   if (reasoning && !promotedReasoning) message.reasoning_content = reasoning;
@@ -544,7 +552,7 @@ export async function toChatCompletion(params, opts = {}) {
   // Serialisable plain field, not a Symbol: the streaming twin travels through
   // JSON.stringify into the messages translator's SSE parser. Gated on the
   // explicit route opt-in (chat.js sets `stopCarrier` only for
-  // body.__route === 'messages') so a direct OpenAI client sees the public shape
+  // trusted Messages context) so a direct OpenAI client sees the public shape
   // byte-for-byte. Only a genuine local stop carries it — a tool/length/refusal
   // finish cannot be upgraded by a stray value.
   if (stopCarrier && matchedStop && finishReason === 'stop') choice._windsurf_stop_sequence = matchedStop;
@@ -710,12 +718,6 @@ export async function streamChatCompletion(params, send, opts = {}) {
     sendContent(text);
     if (collectedToolCalls.length) finishReason = 'tool_calls';
   }
-  // proto-openai-03: release the gate's held tail (the last few chars it was
-  // withholding in case they started a stop sequence). No-op after a hit.
-  if (!stopHit && stopGate.active) {
-    const tail = stopGate.flush();
-    if (tail) send({ ...base, choices: [{ index: 0, delta: { content: tail }, finish_reason: null }] });
-  }
 
   // Native tool calls win over text emulation (the two are mutually exclusive:
   // when native decode is calibrated the text carries no <tool_call> markup).
@@ -771,6 +773,13 @@ export async function streamChatCompletion(params, send, opts = {}) {
       sendContent(reasoning);
       content = reasoning;
     }
+  }
+
+  // proto-openai-03: release the gate's held tail (the last few chars it was
+  // withholding in case they started a stop sequence). No-op after a hit.
+  if (!stopHit && stopGate.active) {
+    const tail = stopGate.flush();
+    if (tail) send({ ...base, choices: [{ index: 0, delta: { content: tail }, finish_reason: null }] });
   }
 
   // 4. Terminal finish chunk. Reaching here means streamChat drained cleanly

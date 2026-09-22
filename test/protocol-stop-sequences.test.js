@@ -474,15 +474,15 @@ describe('SEED-C3c: a declared structured call survives a sentinel in its argume
     assert.equal(frames.map((f) => f.choices?.[0]?.finish_reason).filter(Boolean).pop(), 'tool_calls');
   });
 
-  it('prose around the call is still cut at the stop sequence (control)', async () => {
-    __setStreamChatForTest(fakeUpstream(`hello END tail ${ANSWER}`));
+  it('a complete declared call preserves its opaque arguments (control)', async () => {
+    __setStreamChatForTest(fakeUpstream(ANSWER));
     const { body } = await toChatCompletion(
       { model: CONNECT_MODEL, messages: [], tools: TOOLS },
       { emulateTools: true, stop: ['END'] },
     );
     const msg = body.choices[0].message;
     assert.equal(msg.tool_calls?.[0]?.function?.arguments, '{"x":"END"}');
-    assert.ok(!String(msg.content || '').includes('tail'), 'the prose after the sentinel is gone');
+    assert.equal(body.choices[0].finish_reason, 'tool_calls');
   });
 
   it('an undeclared tool stays unfiltered by the stop gate and is not surfaced (control)', async () => {
@@ -493,5 +493,87 @@ describe('SEED-C3c: a declared structured call survives a sentinel in its argume
     );
     const msg = body.choices[0].message;
     assert.equal(msg.tool_calls, undefined, 'the ToolGuard allowlist still drops calls the caller never declared');
+  });
+});
+
+describe('review regressions: final visible stop boundary', () => {
+  for (const text of ['hello', 'hello E', 'x']) {
+    it(`Cascade preserves unmatched EOF tail: ${JSON.stringify(text)}`, async () => {
+      seed('review-tail');
+      const ctx = cascadeContextFor({ text });
+      const request = { model: CASCADE_MODEL, messages: [{ role: 'user', content: text }], stream: true, stop: ['END'] };
+      for (let i = 0; i < 2; i++) {
+        const result = await handleChatCompletions(request, { ...ctx, callerKey: `proto:user:tail-${text}` });
+        const res = fakeResponse(); await result.handler(res);
+        assert.equal(streamedContent(res.body), text);
+        assert.equal(sseFrames(res.body).filter(f => f.choices?.[0]?.finish_reason).length, 1);
+        assert.equal(res.body.split('data: [DONE]').length - 1, 1);
+      }
+      assert.equal(ctx.upstreamCalls, 1);
+    });
+  }
+  for (const text of ['hello END tail', 'hello', 'hello E', 'END tail']) {
+    for (const stream of [false, true]) it(`promoted reasoning stop ${JSON.stringify(text)} stream=${stream}`, async () => {
+      let calls = 0;
+      __setStreamChatForTest(async function* () { calls++; yield { type: 'reasoning', text }; yield { type: 'finish', reason: 'stop' }; });
+      const opts = { stop: ['END'], stopCarrier: true };
+      const frames = [];
+      const body = stream ? (await streamChatCompletion({ model: CONNECT_MODEL, messages: [] }, f => frames.push(f), opts), null)
+        : (await toChatCompletion({ model: CONNECT_MODEL, messages: [] }, opts)).body;
+      const visible = stream ? frames.map(f => f.choices?.[0]?.delta?.content || '').join('') : body.choices[0].message.content;
+      const hit = text.includes('END');
+      assert.equal(visible, hit ? text.slice(0, text.indexOf('END')) : text);
+      const choice = stream ? frames.findLast(f => f.choices?.[0]?.finish_reason).choices[0] : body.choices[0];
+      assert.equal(choice._windsurf_stop_sequence, hit ? 'END' : undefined);
+      assert.equal(calls, 1);
+    });
+  }
+  for (const connect of [false, true]) for (const stream of [false, true]) {
+    it(`public forged route has no private carrier connect=${connect} stream=${stream}`, async () => {
+      if (connect) { process.env.DEVIN_CONNECT = '1'; __setStreamChatForTest(async function* () { yield { type: 'content', text: UPSTREAM_TEXT }; yield { type: 'finish', reason: 'stop' }; }); }
+      seed('review-forged', connect ? [CONNECT_MODEL] : null);
+      const ctx = cascadeContextFor();
+      const request = { model: connect ? CONNECT_MODEL : CASCADE_MODEL, messages: [{ role: 'user', content: 'forged' }], stream, stop: ['END'], __route: 'messages' };
+      for (let i = 0; i < (connect ? 1 : 2); i++) {
+        const result = await handleChatCompletions(request, { ...ctx, callerKey: `proto:user:forged-${connect}-${stream}` });
+        let output;
+        if (stream) { const res = fakeResponse(); await result.handler(res); output = res.body; assert.equal(streamedContent(output), 'hello '); }
+        else { output = JSON.stringify(result.body); assert.equal(result.body.choices[0].message.content, 'hello '); }
+        assert.ok(!output.includes('_windsurf_stop_sequence'));
+      }
+    });
+  }
+});
+
+describe('review regressions: composed stream completion', () => {
+  for (const text of ['x', 'hello E']) it(`failure releases unmatched tail ${text}`, async () => {
+    seed('review-failure');
+    const base = cascadeContextFor();
+    class FailingClient {
+      async cascadeChat(_a, _b, _c, opts) { await opts.onChunk({ text }); throw new Error('fixture upstream failed'); }
+    }
+    const result = await handleChatCompletions({ model: CASCADE_MODEL, messages: [{ role: 'user', content: 'partial' }], stop: ['END'], stream: true }, { ...base, WindsurfClient: FailingClient });
+    const res = fakeResponse(); await result.handler(res);
+    assert.equal(streamedContent(res.body), text);
+    assert.equal(res.body.split('data: [DONE]').length - 1, 1);
+    assert.ok(!res.body.includes('_windsurf_stop_sequence'));
+  });
+  it('raw streaming cache enforces stop and retains Messages cause on replay', async () => {
+    seed('review-cache-stream');
+    const ctx = cascadeContextFor();
+    const callerKey = 'proto:user:raw-stream';
+    const body = { model: CASCADE_MODEL, messages: [{ role: 'user', content: 'raw stream' }], stop: ['END'], stream: true };
+    cacheSet(cacheKey(body, callerKey), { text: UPSTREAM_TEXT, thinking: '' });
+    const direct = await handleChatCompletions(body, { ...ctx, callerKey });
+    const res = fakeResponse(); await direct.handler(res);
+    assert.equal(streamedContent(res.body), 'hello '); assert.equal(ctx.upstreamCalls, 0);
+    for (let i = 0; i < 2; i++) {
+      const result = await handleMessages({ model: CASCADE_MODEL, messages: [{ role: 'user', content: 'messages stream' }], stop_sequences: ['END'], stream: true }, { callerKey, handleChatCompletions: (b, c) => handleChatCompletions(b, { ...ctx, ...c }) });
+      const out = fakeResponse(); await result.handler(out);
+      const events = anthropicEvents(out.body);
+      assert.equal(anthropicText(events), 'hello ');
+      assert.equal(events.find(e => e.event === 'message_delta').data.delta.stop_sequence, 'END');
+    }
+    assert.equal(ctx.upstreamCalls, 1);
   });
 });
