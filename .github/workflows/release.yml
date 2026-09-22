@@ -222,27 +222,8 @@ jobs:
           npm run build:bundle
           pkg src/_bundle.cjs --config package.json --targets node22-win-x64 --output dist-windows/windsurfapi.exe
 
-      - name: Smoke-check the exe boots
-        shell: pwsh
-        run: |
-          $env:DEVIN_CONNECT = '1'; $env:HOST = '127.0.0.1'; $env:PORT = '3999'
-          $env:API_KEY = 'ci-smoke'; $env:DATA_DIR = "$env:RUNNER_TEMP\wa-smoke"
-          $env:WINDSURFAPI_NO_OPEN = '1'  # don't try to launch a browser on the headless runner
-          $out = "$env:RUNNER_TEMP\exe-out.log"; $err = "$env:RUNNER_TEMP\exe-err.log"
-          $p = Start-Process -FilePath dist-windows\windsurfapi.exe -PassThru -WindowStyle Hidden -RedirectStandardOutput $out -RedirectStandardError $err
-          $ok = $false
-          for ($i = 0; $i -lt 40; $i++) {
-            if ($p.HasExited) { break }
-            try { $r = Invoke-WebRequest 'http://127.0.0.1:3999/health' -UseBasicParsing -TimeoutSec 3; if ($r.StatusCode -eq 200) { $ok = $true; break } } catch {}
-            Start-Sleep -Milliseconds 500
-          }
-          try { $d = Invoke-WebRequest 'http://127.0.0.1:3999/dashboard' -UseBasicParsing -TimeoutSec 5; $dashOk = ($d.StatusCode -eq 200 -and $d.Content.Length -gt 1000) } catch { $dashOk = $false }
-          Stop-Process -Id $p.Id -Force -ErrorAction SilentlyContinue
-          Write-Host "--- exe stdout ---"; if (Test-Path $out) { Get-Content $out -Tail 40 }
-          Write-Host "--- exe stderr ---"; if (Test-Path $err) { Get-Content $err -Tail 40 }
-          if (-not $ok) { Write-Error 'exe did not answer /health'; exit 1 }
-          if (-not $dashOk) { Write-Error 'exe did not serve /dashboard (asset bundling broken?)'; exit 1 }
-          Write-Host 'exe smoke OK: /health 200 + /dashboard served from snapshot assets'
+      - name: Smoke-check /health identity and /dashboard assets
+        run: node scripts/exe-boot-smoke.mjs dist-windows/windsurfapi.exe
 
       # Assemble the "解压即用" zip: the exe + the tray launcher scripts + icon,
       # all in ONE flat folder. tray.ps1 auto-detects the sibling windsurfapi.exe
