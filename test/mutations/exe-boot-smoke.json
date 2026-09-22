@@ -2,7 +2,7 @@
   "tests": [
     "test/exe-boot-smoke.test.js"
   ],
-  "expectBaselinePass": 7,
+  "expectBaselinePass": 10,
   "mutations": [
     {
       "name": "Unrelated listener health is accepted instead of requiring the spawned PID",
@@ -30,6 +30,27 @@
       "file": ".github/workflows/release.yml",
       "anchor": "        run: node scripts/exe-boot-smoke.mjs dist-windows/windsurfapi.exe",
       "replacement": "        run: echo skipped",
+      "expectCaught": true
+    },
+    {
+      "name": "health status is ignored, so a degraded service certifies the binary",
+      "file": "scripts/exe-boot-smoke.mjs",
+      "anchor": "identity.status !== 'ok'\n      || ",
+      "replacement": "",
+      "expectCaught": true
+    },
+    {
+      "name": "the provider field is ignored, so any service on the port certifies the binary",
+      "file": "scripts/exe-boot-smoke.mjs",
+      "anchor": "identity.provider !== 'WindsurfAPI bydwgx1337' || ",
+      "replacement": "",
+      "expectCaught": true
+    },
+    {
+      "name": "the version field is ignored, so a different build certifies the binary",
+      "file": "scripts/exe-boot-smoke.mjs",
+      "anchor": " || identity.version !== VERSION) {",
+      "replacement": ") {",
       "expectCaught": true
     }
   ]

@@ -30,7 +30,7 @@ async function exercise(mode, port, extraEnv = {}) {
   fs.writeFileSync(fixture, "import http from 'node:http';\nconst mode=" + JSON.stringify(mode)
     + "; const html=" + JSON.stringify(HTML) + "; const version=" + JSON.stringify(VERSION) + ";\n"
     + "if(mode==='idle') { setInterval(()=>{},1000); } else if(mode==='exit') { process.exitCode=0; } else {\n"
-    + "http.createServer((q,s)=>{ if(q.url==='/health'){s.setHeader('content-type','application/json');s.end(JSON.stringify({status:'ok',provider:'WindsurfAPI bydwgx1337',version,pid:mode==='wrong-pid'?process.pid+1:process.pid}));}\n"
+    + "http.createServer((q,s)=>{ if(q.url==='/health'){s.setHeader('content-type','application/json');s.end(JSON.stringify({status:mode==='wrong-status'?'degraded':'ok',provider:mode==='wrong-provider'?'some-other-service':'WindsurfAPI bydwgx1337',version:mode==='wrong-version'?'0.0.0-fixture':version,pid:mode==='wrong-pid'?process.pid+1:process.pid}));}\n"
     + "else if(q.url==='/dashboard'){s.setHeader('content-type','text/html');s.end(mode==='bad-html'?'ok':html);}\n"
     + "else {s.setHeader('content-type','application/json');if(mode==='missing-locale'&&q.url==='/dashboard/i18n/en.json')s.statusCode=404;s.end(JSON.stringify({fixture:true}));}\n"
     + "}).listen(Number(process.env.PORT),'127.0.0.1'); }\n");
@@ -75,6 +75,15 @@ it('a child exiting zero before readiness is still failed smoke',async()=>{
   const r=await exercise('exit',await freePort());completed(r,1);assert.match(r.output,/exit|health/i);
 });
 
+it('a 200 whose status field is not ok is not a healthy application',async()=>{
+  const r=await exercise('wrong-status',await freePort());completed(r,1);assert.match(r.output,/identity/i);
+});
+it('a 200 from another service answering on the port is not this application',async()=>{
+  const r=await exercise('wrong-provider',await freePort());completed(r,1);assert.match(r.output,/identity/i);
+});
+it('a 200 reporting a different version is not the binary that was built',async()=>{
+  const r=await exercise('wrong-version',await freePort());completed(r,1);assert.match(r.output,/identity/i);
+});
 it('all executable release jobs invoke the shared verifier before upload, without suppressing its exit',()=>{
   const yaml=fs.readFileSync(new URL('../.github/workflows/release.yml',import.meta.url),'utf8');
   for(const [job,binary] of [['windows-exe','dist-windows/windsurfapi.exe'],['macos-exe-arm64','dist-macos/windsurfapi-macos-arm64'],['macos-exe-x64','dist-macos/windsurfapi-macos-x64']]){
