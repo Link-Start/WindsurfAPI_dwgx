@@ -10,6 +10,11 @@ export async function verifyLocalGateFixture() {
   const env = { ...process.env, npm_execpath: join(root, 'npm-fixture.mjs') };
   delete env.NODE_TEST_CONTEXT;
   for (const key of Object.keys(env)) if (key.startsWith('GIT_')) delete env[key];
+  // This fixture owns GATE_INERT_SKIP_PATHS outright. Inheriting whatever the
+  // operator happens to have exported would decide these assertions for them:
+  // a declared path makes the gate skip the "not declared inert" branch, so the
+  // case that is supposed to prove the default FAILS would silently pass.
+  delete env.GATE_INERT_SKIP_PATHS;
   const git = (...args) => execFileSync('git', args, { cwd: root, env, stdio: 'pipe' });
   const source = readFileSync(new URL('../scripts/local-gate.mjs', import.meta.url), 'utf8');
   try {
