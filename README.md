@@ -4,6 +4,25 @@
 
 # WindsurfAPI · DevinAPI
 
+<!-- dwgx-banner:BEGIN -->
+<div align="center">
+
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="docs/assets/banner.svg" />
+  <source media="(prefers-color-scheme: light)" srcset="docs/assets/banner-light.svg" />
+  <img src="docs/assets/banner.svg" width="100%" alt="WindsurfAPI — 把 Windsurf/Devin 云端 100+ 模型变成 OpenAI / Anthropic / Gemini 三套兼容 API" />
+</picture>
+
+<br/>
+
+JavaScript · MIT · ★3,046
+
+[![docs](https://dwgx.github.io/WindsurfAPI/)](https://dwgx.github.io/WindsurfAPI/) [![releases](https://github.com/dwgx/WindsurfAPI/releases)](https://github.com/dwgx/WindsurfAPI/releases) [![issues](https://github.com/dwgx/WindsurfAPI/issues)](https://github.com/dwgx/WindsurfAPI/issues)
+
+</div>
+<!-- dwgx-banner:END -->
+
+
 > 把 Windsurf / Devin 的 100+ AI 模型（Claude、GPT、Gemini、DeepSeek、Kimi、GLM、SWE…）变成 OpenAI Chat / Responses / Anthropic / Gemini 四套标准 API。零 npm 运行时依赖。
 
 > **历史账本** · 把 1387 次提交、196 个版本、82 个 PR、180 个 issue 摊开给你看：时间线主账 + 贡献者分析 + Git 树三形态（竖/横/环）+ 自伤与返工全记录 —— [**打开可视化账本**](https://dwgx.github.io/WindsurfAPI/HISTORY-LEDGER-VIZ.html)（纯原生渲染，零依赖）
