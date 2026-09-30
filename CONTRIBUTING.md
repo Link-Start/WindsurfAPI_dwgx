@@ -191,12 +191,16 @@ the release result includes explicit skips. Mutations print SKIP because they ar
 of this incremental command. Exit 0 is incremental success, 1 a failed check, 2 missing or
 untrustworthy evidence. PR CI deliberately does not run mutations because of their cost.
 
-**A test file that declares tests but executes none fails the gate.** A skipped test still
-counts toward the file's `tests` total, so a module that throws while loading — a bad import
-path, a missing tool — produces `N pass 0 / 0 fail / N skipped` and a child exit code of 0.
-Both the shard runner and the summary used to read that as success, which meant a suite that
-never ran could be certified green. The gate now names the offending files and how many tests
-each declared, because a skip total on its own cannot be acted on.
+**A test file that declares tests but executes none has to be declared.** The shard summary
+folds such a file into a skip total, so on a host where 4813 tests ran and 6 files did not, the
+verdict still reads PASS and the only trace is `79 skip` in a detail line. The gate now names
+the files and how many tests each declared, because a total cannot be acted on and a path can.
+
+To be precise about what this does and does not catch: a module that **throws while loading**
+does not slip through. A top-level throw in an imported module makes the file fail
+(`fail 1`), which the `fail` count has always caught. What was invisible is the opposite case
+— deliberate, reason-carrying skips that a reader scanning a green line can mistake for
+coverage.
 
 Partial skips stay legal — platforms legitimately gate fixtures. The real-Git fixtures are the
 standing example: they skip on any host without `git` at a trusted absolute POSIX path, by

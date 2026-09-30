@@ -106,22 +106,29 @@ export async function runGate(root = process.cwd()) {
         const counts = releaseEvidence(result.output);
         detail = `${counts.pass} pass / ${counts.fail} fail / ${counts.skipped} skip (${counts.files} files)`;
         if ((counts.fail || counts.cancelled) && result.code === 0) result.code = 1;
-        // A file that declares tests but executes none is not evidence. It is
-        // what a load-time throw looks like from out here: node --test reports
-        // every declared test as skipped and still exits 0, so both the shard
-        // runner and this summary would otherwise certify a suite that never
-        // ran. Naming the files is the point — a skip total alone cannot be
-        // acted on.
+        // A file that declares tests and executes none is invisible in the
+        // verdict. The shard summary folds it into a skip total, so on a host
+        // where 4813 tests ran and 6 files did not, the gate still says PASS
+        // and the only trace is "79 skip" in a detail line. Naming the files is
+        // the point — a total cannot be acted on, a path can.
         //
-        // Some inert files are legitimate and deliberate: the real-Git fixtures
-        // skip on any host without git at a trusted absolute POSIX path, by
-        // design (test/git-fixture-env.js:22-24, asserted in
-        // git-fixture-availability.test.js:38-40). A hard failure there would
-        // make the gate permanently red on Windows and teach people to bypass
-        // it, which is worse than the bug. So the exemption is explicit and
-        // per-file rather than a silent global: an operator declares the paths
-        // they accept, and anything undeclared still fails. The default is
-        // therefore FAIL, not pass.
+        // Note what this is NOT guarding against. An earlier version of this
+        // comment claimed a module that throws while loading shows up as
+        // N skipped / exit 0. Measured on node 24.19.0 that is false: a
+        // top-level throw in an imported module makes the FILE fail
+        // (`fail 1`, `✖ test failed`), which counts.fail already catches. The
+        // real exposure is the opposite case — deliberate, reason-carrying
+        // skips that a reader can mistake for coverage.
+        //
+        // Those skips are legitimate: the real-Git fixtures skip on any host
+        // without git at a trusted absolute POSIX path, by design
+        // (test/git-fixture-env.js:22-24, asserted in
+        // git-fixture-availability.test.js:38-40), and wire-byte-identity skips
+        // without WIRE_BASE_TREE because it is a CI-only comparison. So the
+        // requirement is acknowledgement, not permission: an operator states
+        // which paths this host is not running, and the gate says so in the
+        // verdict. GATE_INERT_SKIP_PATHS has no default, so a file that starts
+        // skipping for a new reason is reported rather than inherited.
         if (counts.inert.length && result.code === 0) {
           const accepted = inertSkipAllowlist(env);
           const inert = counts.inert.map(f => f.file.replace(/\\/g, '/'));
