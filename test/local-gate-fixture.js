@@ -25,13 +25,45 @@ export async function verifyLocalGateFixture() {
       `console.log(${JSON.stringify(text)}); process.exitCode = ${code};\n`);
     setReporter(healthy);
     git('init', '-q');
-    const run = () => spawnSync(process.execPath, ['scripts/local-gate.mjs'], { cwd: root, env, encoding: 'utf8', timeout: 30000 });
+    const run = (overrides = {}) => spawnSync(process.execPath, ['scripts/local-gate.mjs'], { cwd: root, env: { ...env, ...overrides }, encoding: 'utf8', timeout: 30000 });
     let result = run(); assert.equal(result.status, 0, result.stdout + result.stderr);
     assert.match(result.stdout, /PASS test:release exit=0 — 1 pass \/ 0 fail \/ 1 skip/);
     assert.match(result.stdout, /SKIP mutation EXECUTION/, 'the gate must still say what it does not run');
     setReporter('reporter changed without a summary');
     result = run(); assert.equal(result.status, 2); assert.match(result.stdout, /FAIL test:release/);
     assert.doesNotMatch(result.stdout, /INCREMENTAL GATE: PASS/);
+    // A file that declares tests but executes none is not evidence. This is the
+    // shape a load-time throw produces from outside the runner: node --test
+    // reports every declared test as skipped and still exits 0, so a suite that
+    // never ran would otherwise be certified green. A PARTIAL skip stays legal —
+    // platforms legitimately gate fixtures — so the discriminator is
+    // pass+fail==0 on a file that declared tests, not the skip total.
+    const inert = 'Running test shard 1/1: 1/1 files\n- test/fixture.test.js\n'
+      + ['tests 2', 'pass 0', 'fail 0', 'skipped 2', 'cancelled 0', 'todo 0']
+        .map(line => `[test/fixture.test.js] # ${line}\n`).join('');
+    setReporter(inert);
+    // Default is FAIL: an undeclared inert file is the defect, not the norm.
+    result = run(); assert.equal(result.status, 1, result.stdout + result.stderr);
+    assert.match(result.stdout, /FAIL test:release exit=1/);
+    assert.match(result.stdout, /ran no tests and are not declared inert/);
+    assert.match(result.stdout, /test\/fixture\.test\.js \(2\)/, 'and say how many tests it declared');
+    assert.match(result.stdout, /GATE_INERT_SKIP_PATHS/, 'and name the knob that accepts it');
+    assert.doesNotMatch(result.stdout, /INCREMENTAL GATE: PASS/);
+    // Declared inert: the real-Git fixtures skip by design on any host without
+    // git at a trusted absolute POSIX path, so the gate must let an operator say
+    // so explicitly rather than go permanently red and invite a bypass.
+    result = run({ GATE_INERT_SKIP_PATHS: 'test/fixture.test.js' });
+    assert.equal(result.status, 0, result.stdout + result.stderr);
+    assert.match(result.stdout, /1 inert file\(s\), 1 declared/);
+    assert.match(result.stdout, /PASS test:release exit=0/);
+    // A stale entry is reported rather than silently ignored: an allowlist that
+    // no longer matches anything is a claim about the host that has gone stale.
+    result = run({ GATE_INERT_SKIP_PATHS: 'test/other.test.js' });
+    assert.equal(result.status, 1, result.stdout + result.stderr);
+    assert.match(result.stdout, /unused: test\/other\.test\.js/);
+    // Windows-style separators in the declaration still match.
+    result = run({ GATE_INERT_SKIP_PATHS: 'test\\fixture.test.js' });
+    assert.equal(result.status, 0, result.stdout + result.stderr);
     setReporter(healthy.replace('pass 1', 'pass 0').replace('fail 0', 'fail 1'), 1);
     result = run(); assert.equal(result.status, 1); assert.match(result.stdout, /FAIL test:release exit=1/);
     setReporter(healthy);

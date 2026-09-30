@@ -27,6 +27,12 @@ export function releaseEvidence(output) {
   }
   if (rows.size !== expected) throw new Error(`release parsed ${rows.size}/${expected} files`);
   const totals = { tests: 0, pass: 0, fail: 0, skipped: 0, cancelled: 0, todo: 0 };
+  // Per-file skip census. A file whose every test skipped contributes zero to
+  // `pass` while still counting toward `tests`, which is exactly the shape a
+  // load-time throw produces: node --test reports the declared tests as
+  // `skipped` and exits 0. Summing per file lets the caller name the offenders
+  // instead of only reporting a total it cannot act on.
+  const inert = [];
   for (const [file, row] of rows) {
     const zeroWithSuite = row.tests === 0 && Number.isSafeInteger(suiteRows.get(file)) && suiteRows.get(file) > 0;
     if (!Object.keys(totals).every(k => Number.isSafeInteger(row[k]))
@@ -34,9 +40,10 @@ export function releaseEvidence(output) {
         || row.tests !== row.pass + row.fail + row.skipped + row.cancelled + row.todo) {
       throw new Error('incomplete release summary');
     }
+    if (row.tests > 0 && row.pass + row.fail === 0) inert.push({ file, tests: row.tests });
     for (const key of Object.keys(totals)) totals[key] += row[key];
   }
-  return { files: rows.size, ...totals };
+  return { files: rows.size, ...totals, inert };
 }
 
 function execute(command, args, root, env) {
@@ -49,6 +56,23 @@ function execute(command, args, root, env) {
     child.on('close', (code, signal) => done({ code: error || signal ? 2 : code ?? 2, output, error,
       untrustworthy: Boolean(error || signal || code === null) }));
   });
+}
+
+/**
+ * Inert test files the operator has explicitly accepted for this host.
+ *
+ * Semicolon- or newline-separated repo-relative paths in GATE_INERT_SKIP_PATHS.
+ * The environment variable is an OVERRIDE, never a default: an empty value
+ * means "accept nothing", so the gate fails on every inert file. Pre-seeding a
+ * default list would recreate the original defect with extra steps — a file
+ * that becomes inert through a new import-time throw would inherit acceptance
+ * it was never reviewed for.
+ */
+export function inertSkipAllowlist(env = process.env) {
+  return new Set(String(env.GATE_INERT_SKIP_PATHS || '')
+    .split(/[;\n]/)
+    .map(p => p.trim().replace(/\\/g, '/'))
+    .filter(Boolean));
 }
 
 export async function runGate(root = process.cwd()) {
@@ -82,6 +106,38 @@ export async function runGate(root = process.cwd()) {
         const counts = releaseEvidence(result.output);
         detail = `${counts.pass} pass / ${counts.fail} fail / ${counts.skipped} skip (${counts.files} files)`;
         if ((counts.fail || counts.cancelled) && result.code === 0) result.code = 1;
+        // A file that declares tests but executes none is not evidence. It is
+        // what a load-time throw looks like from out here: node --test reports
+        // every declared test as skipped and still exits 0, so both the shard
+        // runner and this summary would otherwise certify a suite that never
+        // ran. Naming the files is the point — a skip total alone cannot be
+        // acted on.
+        //
+        // Some inert files are legitimate and deliberate: the real-Git fixtures
+        // skip on any host without git at a trusted absolute POSIX path, by
+        // design (test/git-fixture-env.js:22-24, asserted in
+        // git-fixture-availability.test.js:38-40). A hard failure there would
+        // make the gate permanently red on Windows and teach people to bypass
+        // it, which is worse than the bug. So the exemption is explicit and
+        // per-file rather than a silent global: an operator declares the paths
+        // they accept, and anything undeclared still fails. The default is
+        // therefore FAIL, not pass.
+        if (counts.inert.length && result.code === 0) {
+          const accepted = inertSkipAllowlist(env);
+          const inert = counts.inert.map(f => f.file.replace(/\\/g, '/'));
+          const undeclared = counts.inert.filter(f => !accepted.has(f.file.replace(/\\/g, '/')));
+          const unused = [...accepted].filter(p => !inert.includes(p));
+          if (accepted.size) {
+            detail += ` — ${counts.inert.length} inert file(s), ${accepted.size} declared`
+              + (unused.length ? ` (unused: ${unused.join(', ')})` : '');
+          }
+          if (undeclared.length) {
+            result.code = 1;
+            detail += ` — ${undeclared.length} ran no tests and are not declared inert: `
+              + undeclared.map(f => `${f.file} (${f.tests})`).join(', ')
+              + (accepted.size ? '' : ' (set GATE_INERT_SKIP_PATHS to accept deliberate platform gates)');
+          }
+        }
       } catch (error) {
         // A real failing child stays a failure. Missing evidence on exit zero is exit two.
         if (result.code === 0) { result.code = 2; result.untrustworthy = true; }

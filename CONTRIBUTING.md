@@ -191,6 +191,27 @@ the release result includes explicit skips. Mutations print SKIP because they ar
 of this incremental command. Exit 0 is incremental success, 1 a failed check, 2 missing or
 untrustworthy evidence. PR CI deliberately does not run mutations because of their cost.
 
+**A test file that declares tests but executes none fails the gate.** A skipped test still
+counts toward the file's `tests` total, so a module that throws while loading — a bad import
+path, a missing tool — produces `N pass 0 / 0 fail / N skipped` and a child exit code of 0.
+Both the shard runner and the summary used to read that as success, which meant a suite that
+never ran could be certified green. The gate now names the offending files and how many tests
+each declared, because a skip total on its own cannot be acted on.
+
+Partial skips stay legal — platforms legitimately gate fixtures. The real-Git fixtures are the
+standing example: they skip on any host without `git` at a trusted absolute POSIX path, by
+design (`test/git-fixture-env.js`, asserted in `test/git-fixture-availability.test.js`). On such
+a host, declare what you accept:
+
+```text
+GATE_INERT_SKIP_PATHS=test/git-fixture-availability.test.js;test/mutate-verify-harness.test.js;...
+```
+
+Semicolon- or newline-separated, repo-relative, `/` or `\`. The variable is an override with no
+default: unset means accept nothing, so an unreviewed file that turns inert through a new
+load-time throw still fails. Entries that match nothing are reported as `unused` — a stale entry
+is a claim about the host that has stopped being true.
+
 **Full gate on Linux/POSIX** (Node, npm, Git and Bash installed; clean committed checkout):
 
 ```bash
