@@ -17,7 +17,7 @@
 
 JavaScript · MIT · ★3,046
 
-[![docs](https://dwgx.github.io/WindsurfAPI/)](https://dwgx.github.io/WindsurfAPI/) [![releases](https://github.com/dwgx/WindsurfAPI/releases)](https://github.com/dwgx/WindsurfAPI/releases) [![issues](https://github.com/dwgx/WindsurfAPI/issues)](https://github.com/dwgx/WindsurfAPI/issues)
+[docs](https://dwgx.github.io/WindsurfAPI/) · [releases](https://github.com/dwgx/WindsurfAPI/releases) · [issues](https://github.com/dwgx/WindsurfAPI/issues)
 
 </div>
 <!-- dwgx-banner:END -->
