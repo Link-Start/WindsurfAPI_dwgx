@@ -52,6 +52,25 @@ const PATH = '/exa.api_server_pb.ApiServerService/GetChatMessage';
 const USER_JWT_PATH = '/exa.auth_pb.AuthService/GetUserJwt';
 const METADATA_USER_JWT_FIELD = 21;
 
+// Ceiling for a non-200 upstream error body. Generous next to any real
+// Connect-RPC error — upstream returns a JSON envelope or a short text line —
+// and far below V8's ~512MiB string limit, so the toString() can never be the
+// thing that throws. 8MiB leaves room for a pathological proxy error page
+// while keeping the process nowhere near the allocator's ceiling.
+// Read once at module load rather than per response: this is a safety ceiling,
+// not a tuning knob, and the hot path should not re-parse an env var on every
+// error. Overridable so the ceiling itself is testable without allocating
+// megabytes per case; a non-positive or unparseable value falls back to the
+// default rather than disabling the cap, because "no cap" is the bug.
+const MAX_ERROR_BODY_BYTES = (() => {
+  const raw = Number.parseInt(String(process.env.DEVIN_CONNECT_MAX_ERROR_BODY_BYTES ?? ''), 10);
+  return Number.isSafeInteger(raw) && raw > 0 ? raw : 8 * 1024 * 1024;
+})();
+// Appended when the ceiling is hit, so the truncation is visible to whoever
+// reads the error rather than the error silently describing a prefix of
+// itself. Mirrors RESPONSE_STORE's TRUNCATION_MARKER.
+const ERROR_BODY_TRUNCATION_MARKER = '\n[... truncated: upstream error body exceeded the cap ...]';
+
 function validatedAccountConnectHost(host) {
   const refused = () => Object.assign(new Error('ERR_CONNECT_ACCOUNT_HOST_NOT_ALLOWED'), {
     code: 'ERR_CONNECT_ACCOUNT_HOST_NOT_ALLOWED',
@@ -2485,9 +2504,43 @@ export async function* streamChat({
     // frame-parse failure from feeding an error body to StreamingFrameParser.
     if (res.statusCode && res.statusCode !== 200) {
       const chunks = [];
-      res.on('data', (c) => chunks.push(c));
+      // Bound the buffer. An error body is a diagnostic, not a payload: the
+      // only thing downstream does with it is classifyUpstreamError, which
+      // reads a code, a message and an optional reset window. Concatenating
+      // without a ceiling is an availability bug, not a parsing one — a
+      // misbehaving or hostile upstream can stream past V8's ~512MiB string
+      // limit, at which point Buffer.concat(...).toString('utf8') throws
+      // ERR_STRING_TOO_LONG. That throw happens inside the 'end' listener,
+      // where nothing catches it: it escapes as an uncaughtException and
+      // src/index.js exits the process, so one bad response from one upstream
+      // disconnects every tenant. Same shape as the decodeURIContent guard in
+      // grpc.js:19-24.
+      //
+      // Keep a genuine prefix rather than whole chunks. Slicing the chunk that
+      // crosses the ceiling is what makes this correct for a body that arrives
+      // as one large chunk: dropping that chunk instead would leave nothing
+      // behind and the error would be a bare truncation marker describing no
+      // upstream output at all. The tail is discarded, never held.
+      let bodyBytes = 0;
+      let bodyTruncated = false;
+      res.on('data', (c) => {
+        if (bodyTruncated) return;
+        const room = MAX_ERROR_BODY_BYTES - bodyBytes;
+        if (c.length <= room) {
+          bodyBytes += c.length;
+          chunks.push(c);
+          return;
+        }
+        if (room > 0) chunks.push(c.subarray(0, room));
+        bodyBytes = MAX_ERROR_BODY_BYTES;
+        bodyTruncated = true;
+      });
       res.on('end', () => {
-        const body = Buffer.concat(chunks).toString('utf8');
+        const raw = Buffer.concat(chunks);
+        const body = raw.toString('utf8') + (bodyTruncated ? ERROR_BODY_TRUNCATION_MARKER : '');
+        if (bodyTruncated) {
+          log.warn(`[devin-connect] upstream ${res.statusCode} error body exceeded ${MAX_ERROR_BODY_BYTES} bytes; truncated for classification`);
+        }
         // Preserve the upstream Connect-RPC error code (audit F2): the trailer
         // path forwards parsed.error.code, but this non-200 path historically
         // dropped it (code=null), so an `unavailable`/`resource_exhausted`

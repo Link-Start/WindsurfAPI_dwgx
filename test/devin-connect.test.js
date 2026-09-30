@@ -23,6 +23,9 @@ import {
 } from '../src/proto.js';
 import { wrapEnvelope, endOfStreamEnvelope } from '../src/connect.js';
 import { EventEmitter } from 'node:events';
+import { mkdtempSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 
 const ENV_KEYS = ['DEVIN_CONNECT_TOKEN', 'WINDSURF_API_KEY', 'DEVIN_CONNECT_IMAGE_TAG',
   'DEVIN_CONNECT_IMAGE_INNER_TAGS', 'DEVIN_CONNECT_TOOL_DEF_TAGS',
@@ -2405,5 +2408,99 @@ describe('encodeAssistantToolCall reasoning-tag guard (PR #241 review point 3)',
       withEleven.indexOf(writeStringField(11, 'some reasoning text')) >= 0,
       'tag 11 reasoning must still be serialized verbatim',
     );
+  });
+});
+
+// A non-200 error body is a diagnostic, but it arrives on an unbounded stream.
+// Before the ceiling, a hostile or broken upstream could push past V8's string
+// limit; the resulting ERR_STRING_TOO_LONG is thrown inside the 'end' listener
+// where nothing catches it, escapes as an uncaughtException and exits the
+// process — so one bad response disconnects every tenant. The cap has to keep
+// the classification path working AND make the truncation visible.
+describe('non-200 error body is bounded', () => {
+  const realMax = process.env.DEVIN_CONNECT_MAX_ERROR_BODY_BYTES;
+  afterEach(() => {
+    __setRequestImpl(null);
+    if (realMax === undefined) delete process.env.DEVIN_CONNECT_MAX_ERROR_BODY_BYTES;
+    else process.env.DEVIN_CONNECT_MAX_ERROR_BODY_BYTES = realMax;
+  });
+
+  // The module reads the cap at load, so a case that needs a different ceiling
+  // has to load a fresh copy of the module graph under its own env.
+  const withCap = async (cap, body, statusCode = 500) => {
+    const dir = mkdtempSync(join(tmpdir(), 'dc-cap-'));
+    const prev = process.env.DEVIN_CONNECT_MAX_ERROR_BODY_BYTES;
+    process.env.DEVIN_CONNECT_MAX_ERROR_BODY_BYTES = String(cap);
+    try {
+      const mod = await import(`${new URL('../src/devin-connect.js', import.meta.url).href}?cap=${cap}&r=${Math.random()}`);
+      mod.__setRequestImpl((_opts, cb) => {
+        const req = { on() { return req; }, setTimeout() { return req; }, write() {}, end() {}, destroy() {} };
+        const res = new EventEmitter();
+        res.statusCode = statusCode;
+        if (cb) cb(res);
+        queueMicrotask(() => { res.emit('data', body); res.emit('end'); });
+        return req;
+      });
+      const err = await mod.streamChat({
+        messages: [{ role: 'user', content: 'hi' }], model: 'swe-1-7', token: TOKEN,
+      }).next().then(() => null, (e) => e);
+      return err;
+    } finally {
+      if (prev === undefined) delete process.env.DEVIN_CONNECT_MAX_ERROR_BODY_BYTES;
+      else process.env.DEVIN_CONNECT_MAX_ERROR_BODY_BYTES = prev;
+      rmSync(dir, { recursive: true, force: true });
+    }
+  };
+
+  it('truncates an oversized error body instead of buffering without bound', async () => {
+    // 4 KiB of body against a 64-byte ceiling. The previous assertion compared
+    // the result against the INPUT size, which the uncapped path also satisfies
+    // — it could not tell the two implementations apart. Compare against the
+    // CEILING instead: only a bounded implementation can come back that small.
+    const err = await withCap(64, Buffer.alloc(4096, 0x41));
+    assert.ok(err, 'an oversized error body must still produce a classified error');
+    const marker = '\n[... truncated: upstream error body exceeded the cap ...]';
+    assert.ok(err.message.length < 512,
+      `a 64-byte ceiling must not yield a ${err.message.length}-character message`);
+    // ceiling + marker + nothing else. The earlier form compared against a
+    // hand-counted marker length and was off by one; derive it instead.
+    assert.equal(err.message.length, 64 + marker.length);
+  });
+
+  it('keeps the body a genuine prefix of the real one, not a reordering', async () => {
+    const err = await withCap(64, Buffer.from('ABCDEFGH'.repeat(512), 'utf8'));
+    const kept = err.message.split('\n[... truncated')[0];
+    assert.ok('ABCDEFGH'.repeat(512).startsWith(kept), 'kept text must be a prefix of the body');
+    assert.ok(kept.length > 0, 'truncation must not discard everything');
+  });
+
+  it('marks the truncation so the error does not silently describe a prefix', async () => {
+    const err = await withCap(64, Buffer.alloc(4096, 0x41));
+    assert.match(err.message, /truncated: upstream error body exceeded the cap/);
+  });
+
+  it('leaves a body under the cap untouched and still classifies it', async () => {
+    const err = await withCap(64 * 1024, Buffer.from('upstream said no', 'utf8'), 429);
+    assert.equal(err.code, 'RATE_LIMITED');
+    assert.match(err.message, /upstream said no/);
+    assert.doesNotMatch(err.message, /truncated/, 'a body that fit must not be marked truncated');
+  });
+
+  it('falls back to the default ceiling when the override is not a positive integer', async () => {
+    for (const bad of ['0', '-1', 'abc', '', '1e400', '  ']) {
+      const err = await withCap(bad, Buffer.from('short', 'utf8'), 500);
+      assert.ok(err, `override ${JSON.stringify(bad)} must not break the path`);
+    }
+  });
+
+  it('never treats a bad override as "no ceiling"', async () => {
+    // Every other case here uses a small body, so an implementation that
+    // returned Infinity for an unparseable value would pass them all. This one
+    // pins the fallback to a real number: the default is 8MiB, so a 1KiB body
+    // must survive whole and unmarked.
+    const err = await withCap('not-a-number', Buffer.alloc(1024, 0x43), 500);
+    assert.doesNotMatch(err.message, /truncated/,
+      'a 1KiB body is far below the 8MiB default and must not be marked truncated');
+    assert.equal(err.message.length, 1024, 'the whole body must survive');
   });
 });
