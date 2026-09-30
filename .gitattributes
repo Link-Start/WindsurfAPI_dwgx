@@ -2,3 +2,29 @@
 Dockerfile text eol=lf
 *.yml text eol=lf
 *.yaml text eol=lf
+
+# Mutation anchors are byte-exact strings, and 216 of the 754 in
+# test/mutations/*.json span a newline. Without an eol rule a Windows clone
+# under the default core.autocrlf=true rewrites those LF bytes to CRLF, the
+# anchors stop matching, and spec-static-check reports a zero-hit anchor rather
+# than a platform difference. The four rules above covered only .sh/.yml/.yaml,
+# so the JavaScript tree was exposed.
+#
+# text=auto is deliberately NOT set: it would let git guess per file and
+# reintroduce the mixed state. These are explicit, and `eol=lf` fixes the
+# working-tree form independently of what core.autocrlf says.
+*.js text eol=lf
+*.mjs text eol=lf
+*.cjs text eol=lf
+*.json text eol=lf
+*.md text eol=lf
+
+# Binary assets must never be line-ending converted. Some are already matched
+# by extension, but the packaged exe and the image fixtures have none.
+*.exe binary
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.ico binary
+*.zip binary
+*.gz binary
