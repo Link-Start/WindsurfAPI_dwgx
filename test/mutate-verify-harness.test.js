@@ -405,6 +405,18 @@ export default async function* truncatingReporter() {
       'zero failures were measured; printing names under failing: is the mislabel itself:\n' + out);
     assert.doesNotMatch(out, /Fix the suite first/,
       'the suite is not failing — telling the reader to fix it sends them after assertions that never ran');
+    // The remedy must name a control that actually exists. "raise the runner's force-exit
+    // threshold" named nothing: node --help on 22.23.3 and 24.21.0 lists only the boolean
+    // --test-force-exit among the --test* options, there is no threshold knob, and
+    // runSuite's own comment records that the flag ends runs early and must not be used —
+    // so the sentence's only real-world referent makes truncation WORSE. Pinned as an
+    // absence assertion, because a presence assertion alone lets the dead remedy back in.
+    // Ordered absence-first on purpose: the absence guard is the regression guard, so when
+    // the dead remedy comes back this is the assertion that names it.
+    assert.doesNotMatch(out, /force-exit threshold/,
+      'no such knob exists; --test-force-exit ends a run early, it does not raise a threshold:\n' + out);
+    assert.match(out, /Make the whole suite run \(keep a live handle until the suite ends\) and re-run\./,
+      `the remedy must name a control that exists:\n${out}`);
     assert.equal(r.code, 2, 'a truncated baseline is still a harness-level refusal (exit 2)');
   });
 

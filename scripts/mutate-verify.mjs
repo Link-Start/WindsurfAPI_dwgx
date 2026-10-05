@@ -213,8 +213,7 @@ function baselineRefusal(base) {
       + `cancelled=${base.cancelled} tests=${base.tests}). `
       + `${base.cancelled} test(s) were cancelled because the event loop drained before they ran, `
       + 'so this run measured less than the suite owns and every verdict below is unproven. '
-      + 'Make the whole suite run (keep the loop alive, or raise the runner\'s force-exit '
-      + 'threshold) and re-run.'
+      + 'Make the whole suite run (keep a live handle until the suite ends) and re-run.'
       + (base.failedNames.length ? `\n  cancelled: ${base.failedNames.join(', ')}` : '');
   }
   return `baseline did not measure what it claims (pass=${base.pass} fail=${base.fail} `
