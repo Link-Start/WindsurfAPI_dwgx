@@ -81,9 +81,9 @@ describe('Anthropic messages request translation', () => {
     assert.equal(result.body.content[0].type, 'thinking');
     assert.equal(result.body.content[0].thinking, 'plan');
     // When the upstream supplies no real reasoning_signature, the `signature` key
-    // is omitted entirely. Strict clients (e.g. Grok Build's messages backend)
-    // reject an empty-string placeholder as invalid.
-    assert.equal(result.body.content[0].signature, undefined);
+    // is still present as "". Strict clients (e.g. Grok Build's messages backend)
+    // fail with "missing field `signature`" when the key is omitted.
+    assert.equal(result.body.content[0].signature, '');
     assert.equal(result.body.content[1].type, 'text');
     assert.equal(result.body.content[1].text, 'done');
   });
@@ -890,8 +890,8 @@ describe('Anthropic messages request translation', () => {
   // Anthropic thinking-block sequence: content_block_start(thinking) →
   // thinking_delta* → [signature_delta] → content_block_stop. The proxy only
   // emits a signature_delta when the upstream supplied a real reasoning_signature;
-  // otherwise the signature key is omitted so strict clients (e.g. Grok Build's
-  // messages backend) don't fail on an empty-string placeholder.
+  // the content_block_start always carries `signature: ""` so strict clients
+  // (e.g. Grok Build's messages backend) that require the key still parse it.
   it('does not emit a signature_delta for a streamed thinking block without a real signature', async () => {
     const result = await handleMessages({
       model: 'claude-sonnet-4.6',
@@ -922,6 +922,7 @@ describe('Anthropic messages request translation', () => {
     const thinkingStart = events.find(e => e.event === 'content_block_start' && e.data.content_block?.type === 'thinking');
     assert.ok(thinkingStart, 'a thinking content_block_start was emitted');
     const thinkingIdx = thinkingStart.data.index;
+    assert.equal(thinkingStart.data.content_block.signature, '', 'thinking start carries signature key');
 
     const sigDeltas = events.filter(e => e.event === 'content_block_delta' && e.data.delta?.type === 'signature_delta');
     assert.equal(sigDeltas.length, 0, 'no signature_delta emitted without a real signature');

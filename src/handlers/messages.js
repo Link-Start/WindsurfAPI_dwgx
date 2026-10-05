@@ -870,19 +870,16 @@ export function openAIToAnthropic(result, model, msgId, cachePolicy = null, stop
   if (choice?.message?.reasoning_content) {
     // Anthropic thinking blocks may carry an opaque encrypted `signature` that
     // the *real* Anthropic server decrypts on multi-turn replay. Our upstream
-    // (Devin #9 / Cascade) never emits one, so when it is missing we omit the
-    // field entirely rather than emitting an empty-string placeholder — some
-    // strict clients (e.g. Grok Build's messages backend) reject `signature: ""`
-    // as a missing/invalid value. If upstream ever supplies a real signature we
-    // forward it (forward-compat for a future thinking/paid model).
-    const thinkingBlock = {
+    // (Devin #9 / Cascade) never emits one, so we fall back to an empty string.
+    // The key itself must always be present: strict clients (e.g. Grok Build's
+    // messages backend, serde `signature: String`) fail the whole response with
+    // "missing field `signature`" when it is omitted, while `""` parses fine.
+    // If upstream ever supplies a real signature we forward it.
+    content.push({
       type: 'thinking',
       thinking: choice.message.reasoning_content,
-    };
-    if (choice.message.reasoning_signature) {
-      thinkingBlock.signature = choice.message.reasoning_signature;
-    }
-    content.push(thinkingBlock);
+      signature: choice.message.reasoning_signature || '',
+    });
   }
   if (choice?.message?.tool_calls?.length) {
     if (choice.message.content) content.push({ type: 'text', text: choice.message.content });
@@ -1109,9 +1106,9 @@ class AnthropicStreamTranslator {
     // Anthropic streams close a thinking block with a `signature_delta` carrying
     // the encrypted-thinking signature. Our upstream never produces one, so we
     // keep the pending signature empty and only emit the delta if a real
-    // `delta.reasoning_signature` arrives. An empty-string fallback is omitted
-    // because strict clients (e.g. Grok Build's messages backend) reject
-    // `signature: ""` as an invalid value.
+    // `delta.reasoning_signature` arrives. The thinking content_block_start
+    // always carries `signature: ""` (as Anthropic does), so strict clients that
+    // require the key (e.g. Grok Build's messages backend) still parse it.
     this.pendingThinkingSignature = '';
   }
 
@@ -1168,7 +1165,9 @@ class AnthropicStreamTranslator {
     this.current = { type, index: this.blockIndex };
     let content_block;
     if (type === 'text') content_block = { type: 'text', text: '' };
-    else if (type === 'thinking') content_block = { type: 'thinking', thinking: '' };
+    // `signature` must be present on the start event: Grok Build deserializes it
+    // as a required field and aborts the stream with "missing field `signature`".
+    else if (type === 'thinking') content_block = { type: 'thinking', thinking: '', signature: '' };
     else if (type === 'tool_use') content_block = { type: 'tool_use', id: extra.id, name: extra.name, input: {} };
     this.send('content_block_start', {
       type: 'content_block_start',
@@ -1198,9 +1197,8 @@ class AnthropicStreamTranslator {
     // A thinking block should close with a signature_delta BEFORE content_block_stop
     // (Anthropic sequence: start → thinking_delta* → signature_delta → stop). Only
     // thinking blocks get it — never text/tool_use. We only emit the delta when
-    // the upstream actually provided a real signature; an empty-string fallback
-    // is omitted because strict clients (e.g. Grok Build's messages backend)
-    // reject `signature: ""` as invalid (see constructor note).
+    // the upstream actually provided a real signature; otherwise the `signature: ""`
+    // already sent on content_block_start stands (see constructor note).
     if (this.current.type === 'thinking' && this.pendingThinkingSignature) {
       this.send('content_block_delta', {
         type: 'content_block_delta',
