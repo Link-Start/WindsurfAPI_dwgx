@@ -291,11 +291,16 @@ export async function runCalibration({ token, model = DEFAULT_MODEL, prompt = DE
   // while a top-level numeric (e.g. #22 committed_acu_cost, a double) needs the
   // decoder's `^N` form. Same candidates, same convention — the scope picks the
   // env syntax, so the written .env can't point the operator at the wrong block.
-  const billingCands = [...(byTarget.billing || []), ...(byTarget.cache_tokens || [])];
+  // Meta candidates target both billing AND cache_tokens, so UNION the two lists
+  // (not concat) or every meta tag is emitted twice ([14,15,14,15]).
+  const billingCands = [...new Set([...(byTarget.billing || []), ...(byTarget.cache_tokens || [])])];
   const metaBilling = billingCands.filter((c) => c.scope === 'meta');
   const topBilling = billingCands.filter((c) => c.scope === 'top');
   if (metaBilling.length) envLines.push(`# meta varint candidates at tags [${metaBilling.map((c) => c.tag).join(',')}] — map to credit_cost/cache_*; then set DEVIN_CONNECT_BILLING_TAGS / cache via DEVIN_CONNECT_BILLING_TAGS`);
-  if (topBilling.length) envLines.push(`# top-level numeric candidates at tags [${topBilling.map((c) => c.tag).join(',')}] — map to credit_cost / committed_acu_cost / quota / overage; pin via the ^N form, e.g. DEVIN_CONNECT_BILLING_TAGS=committed_acu_cost=^${topBilling[0].tag}`);
+  // The example stays `<field>=^N`: with several top candidates the first tag's
+  // key is unknown, and naming a specific key (#22 committed_acu_cost) next to a
+  // different tag (#14 credit_cost) would wire the wrong field.
+  if (topBilling.length) envLines.push(`# top-level numeric candidates at tags [${topBilling.map((c) => c.tag).join(',')}] — map to credit_cost / committed_acu_cost / quota / overage; pin via the ^N form, e.g. DEVIN_CONNECT_BILLING_TAGS=<field>=^${topBilling[0].tag}`);
   // Sub-message inner varints (e.g. the #28 trailer): informational — the shipped
   // billing decoder reads the #7 meta block, so these are NOT auto-wired. Surface
   // them so the operator can decide whether #28 carries the billing/usage fields.
@@ -381,6 +386,7 @@ async function selfTest() {
   assert(report.envLines.some((l) => l === 'DEVIN_CONNECT_ACTUAL_MODEL_TAG=8'), 'emits actual_model env line');
   assert(report.envLines.some((l) => /outer=12/.test(l)), 'emits tool_call outer candidate');
   assert(report.envLines.some((l) => /14,15/.test(l)), 'emits billing meta candidates');
+  assert(report.envLines.some((l) => /^# meta varint candidates at tags \[14,15\] —/.test(l)), 'meta hint lists each tag once (no billing/cache_tokens duplication)');
   assert(report.envLines.some((l) => /sub-message #28\.2 inner varints/.test(l) && /3=1200/.test(l) && /4=34/.test(l)), 'emits nested sub #28.2 informational env hint');
 
   // Top-level numeric tag #22 in the exact dump shape decodeFrame emits for a
@@ -393,6 +399,20 @@ async function selfTest() {
   assert(acuReport.candidates.some((c) => c.scope === 'top' && c.tag === 22 && c.bucket === 'billing/cache' && c.task === '#46'), 'top numeric #22 → billing/cache (#46)');
   assert(!acuReport.envLines.some((l) => /ACTUAL_MODEL_TAG=22/.test(l)), 'top numeric #22 never emits the actual_model env line');
   assert(acuReport.envLines.some((l) => /\^22/.test(l)), 'top numeric #22 emits the ^N top-level pin hint');
+
+  // Multi-candidate top frame: the hint's example must stay generic — pairing a
+  // specific key with the FIRST tag (#14 = credit_cost) would wire credit as ACU.
+  const acuRaw2 = Buffer.alloc(8); acuRaw2.writeDoubleLE(0.0006735000060871243, 0);
+  const raw14 = Buffer.alloc(8); raw14.writeDoubleLE(1.25, 0);
+  const multiFrame = {
+    1: 'bot-x',
+    14: { kind: 'fixed64', preview: 1.25, raw: raw14.toString('hex') },
+    22: { kind: 'fixed64', preview: 0.0006735000060871243, raw: acuRaw2.toString('hex') },
+  };
+  const multiReport = await runCalibration({ real: false, deps: { frameDumps: [multiFrame], metaDumps: [] } });
+  const multiLine = multiReport.envLines.find((l) => /top-level numeric candidates/.test(l));
+  assert(multiLine && !/committed_acu_cost=\^14/.test(multiLine), 'multi-candidate hint never pairs a key with the wrong tag');
+  assert(multiLine && /<field>=\^14/.test(multiLine), 'multi-candidate hint shows the generic ^N form');
 
   // status table reflects discoveries + already-set env
   const tbl = statusTable(report, {});
