@@ -6860,6 +6860,31 @@ void main(){ vec3 s=texture(u_scene,v_uv).rgb; vec3 g=texture(u_glow,v_uv).rgb; 
         </div>`;
   },
 
+  // K8: lifetime spend cells — helps decide which account to rotate/retire.
+  // ACU is #239's opt-in coordinate: `committed_acu_cost` only decodes when the
+  // operator names its uncalibrated tag in DEVIN_CONNECT_BILLING_TAGS (default
+  // off), so a zero here means "not decoded", never "cost nothing". The cell
+  // renders only when the decoder actually produced a value — no settled-
+  // looking 0 — and stays separate from credit (different units, never summed).
+  // Extracted from renderAccountDetail so test/dashboard-spend-acu.test.js can
+  // execute the shipped template instead of grepping for its strings.
+  renderSpendCells(sp) {
+    const T = (k, v) => I18n.t('account.detail.runtime.' + k, v);
+    const s = sp || {};
+    const fmt = (n) => (Number(n) || 0).toLocaleString();
+    const frac = (n) => (Math.round(n * 100) / 100).toLocaleString(undefined, { maximumFractionDigits: 2 });
+    // Sub-cent ACU totals are real (canonical #22 decode: 0.0006735…); two decimals would flatten them to "0", so keep 4 significant digits below 0.01.
+    const acuFmt = (n) => (n > 0 && n < 0.01) ? n.toLocaleString(undefined, { maximumSignificantDigits: 4 }) : frac(n);
+    const credits = Number(s.creditCost) || 0;
+    const acu = Number(s.acuCost) || 0;
+    return `<div class="detail-kv">
+              <span class="k">${T('spendRequests')}</span><span class="v" style="font-variant-numeric:tabular-nums">${fmt(s.requests)}</span>
+              <span class="k">${T('spendTokens')}</span><span class="v" style="font-variant-numeric:tabular-nums">${fmt(s.totalTokens)}</span>
+              ${credits > 0 ? `<span class="k">${T('spendCredits')}</span><span class="v" style="font-variant-numeric:tabular-nums">${frac(credits)}</span>` : ''}
+              ${acu > 0 ? `<span class="k">${T('spendAcu')}</span><span class="v" style="font-variant-numeric:tabular-nums">${acuFmt(acu)}</span>` : ''}
+            </div>`;
+  },
+
   async setSpendPolicy(id, val) {
     const spendOnDemand = val === 'on' ? true : val === 'off' ? false : null;
     await this.api('PATCH', `/accounts/${id}`, { spendOnDemand });
@@ -7014,17 +7039,7 @@ void main(){ vec3 s=texture(u_scene,v_uv).rgb; vec3 g=texture(u_glow,v_uv).rgb; 
               <span class="k">${T('runtime.apiKey')}</span><span class="v"><code>${this.esc(a.apiKey_masked || a.keyPrefix || '')}</code></span>
               ${cr.lastError ? `<span class="k">${T('runtime.lastError')}</span><span class="v" style="color:var(--error);font-size:11px">${this.esc(cr.lastError).slice(0, 80)}</span>` : ''}
             </div>
-            ${(() => {
-              // K8: lifetime spend — helps decide which account to rotate/retire.
-              const sp = a.totalSpend || { requests: 0, totalTokens: 0, creditCost: 0 };
-              const fmt = (n) => (Number(n) || 0).toLocaleString();
-              const credits = Number(sp.creditCost) || 0;
-              return `<div class="detail-kv">
-              <span class="k">${T('runtime.spendRequests')}</span><span class="v" style="font-variant-numeric:tabular-nums">${fmt(sp.requests)}</span>
-              <span class="k">${T('runtime.spendTokens')}</span><span class="v" style="font-variant-numeric:tabular-nums">${fmt(sp.totalTokens)}</span>
-              ${credits > 0 ? `<span class="k">${T('runtime.spendCredits')}</span><span class="v" style="font-variant-numeric:tabular-nums">${(Math.round(credits * 100) / 100).toLocaleString(undefined, { maximumFractionDigits: 2 })}</span>` : ''}
-            </div>`;
-            })()}
+            ${this.renderSpendCells(a.totalSpend)}
           </div>
         </div>
       </div>
