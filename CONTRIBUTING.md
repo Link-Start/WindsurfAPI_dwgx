@@ -219,9 +219,11 @@ skipped 0`. A Windows host's set differs — it also lacks `/usr/bin/git`, so it
 real-Git fixtures (`test/git-fixture-availability.test.js;test/mutate-verify-harness.test.js`).
 
 Semicolon- or newline-separated, repo-relative, `/` or `\`. The variable is an override with no
-default: unset means accept nothing, so an unreviewed file that turns inert through a new
-load-time throw still fails. Entries that match nothing are reported as `unused` — a stale entry
-is a claim about the host that has stopped being true.
+default: unset means accept nothing, so an unreviewed file that starts executing nothing while
+declaring work — the shape the census names — still fails. A module that throws while loading is
+not that shape: it fails the file (`tests 1 / fail 1`, exit 1), which the `fail` count has always
+caught; a file that declares nothing at all is no evidence either. Entries that match nothing are
+reported as `unused` — a stale entry is a claim about the host that has stopped being true.
 
 **Full gate on Linux/POSIX** (Node, npm, Git and Bash installed; clean committed checkout):
 
