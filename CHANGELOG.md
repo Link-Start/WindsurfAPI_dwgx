@@ -2,7 +2,7 @@
 
 <p align="center">
   <a href="#最近的版本">最近的版本</a> ·
-  <a href="docs/releases/">全部 189 份发布说明</a> ·
+  <a href="docs/releases/">全部 190 份发布说明</a> ·
   <a href="README.md">← 主 README</a>
 </p>
 
@@ -19,9 +19,9 @@
 
 | | |
 |---|---|
-| 发布说明 | **189** 份,v2.0.6 → v3.9.38 |
+| 发布说明 | **190** 份,v2.0.6 → v3.9.39 |
 | git tag | 200 个 |
-| 当前 | **v3.9.38**(2026-09-23) |
+| 当前 | **v3.9.39**(2026-10-05) |
 | 运行时依赖 | **0** —— 从第一个版本保持到现在 |
 
 ```mermaid
@@ -41,6 +41,16 @@ flowchart LR
 ## 最近的版本
 
 下面是 3.9.x 全系。更早的版本请直接翻 [`docs/releases/`](docs/releases/)。
+
+### [v3.9.39](docs/releases/RELEASE_NOTES_3.9.39.md) · 2026-10-05
+
+上游错误响应体在**流式与 unary 两条读取路径**上都没有上限:一个坏上游的 600 MiB 5xx 就能
+`ERR_STRING_TOO_LONG` 退掉整个进程,所有租户断连。三处读取改用共用的带上限累加器(8 MiB,可 env
+覆盖),截断保留真实前缀——修复后同样的 600 MiB 响应退出 0 + `UPSTREAM_ERROR` + 截断标记。
+门禁新增**逐文件 inert 普查**:声明了测试却一条没执行的文件(含整段 `describe.skip`)判红并点名,
+宿主需显式声明两条;`mutate-verify` 把被取消的 baseline 报成"截断"而非失败套件。突变全量扫描
+2026-10-05 首次在 HMC bench 原生跑完(84 份规格 / 759 条突变)。无公开接口、路由、字段或默认
+开关变化;无 live-account 验收。
 
 ### [v3.9.38](docs/releases/RELEASE_NOTES_3.9.38.md) · 2026-09-23
 
