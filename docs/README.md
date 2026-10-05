@@ -8,9 +8,10 @@
   <a href="../README.md">← Main README</a>
 </p>
 
-> **Which door is yours?** This directory holds 203 tracked files, most of them append-only
-> records aimed at whoever maintains the project next. The three tables below are the short
-> paths in. If you only want the gateway running, you need nothing under "Take it over".
+> **Which door is yours?** This directory holds the project's tracked documentation — count it
+> with `git ls-files docs/` — most of it append-only records aimed at whoever maintains the
+> project next. The three tables below are the short paths in. If you only want the gateway
+> running, you need nothing under "Take it over".
 
 ```mermaid
 flowchart TD
@@ -20,8 +21,8 @@ flowchart TD
     Q -->|"ship DEVIN_CONNECT"| CUT["DEVIN-CONNECT-CUTOVER.md<br/>prod is ON, code default is OFF"]
     Q -->|"understand it"| ARCH["review.html<br/>whole-system map"]
     Q -->|"know what was probed"| LED["AUDIT-LEDGER.md<br/>16 rounds, append-only"]
-    Q -->|"maintain it"| HO["HANDOFF-*.md<br/>1 live head + 10 archived"]
-    Q -->|"what changed"| REL["releases/<br/>188 notes, v2.0.6 → v3.9.37"]
+    Q -->|"maintain it"| HO["HANDOFF-*.md<br/>1 live head + archived handoffs"]
+    Q -->|"what changed"| REL["releases/<br/>one file per version, v2.0.6 → present"]
 
     classDef user fill:#1f6feb22,stroke:#1f6feb
     classDef maint fill:#8957e522,stroke:#8957e5
@@ -62,7 +63,7 @@ flowchart TD
 
 | # | File | Why |
 |---|---|---|
-| 1 | **[HANDOFF-2026-09-17-B.md](HANDOFF-2026-09-17-B.md)** | Current state (v3.9.37), what to expose, what is blocked on someone else. Read §1 first (operational traps), then §4 (what is deliberately not done). Product tag is v3.9.37; OTA follows the latest annotated tag, not later untagged SHAs. |
+| 1 | **[HANDOFF-2026-09-17-B.md](HANDOFF-2026-09-17-B.md)** | Current state (the file's own header names the live product tag), what to expose, what is blocked on someone else. Read §1 first (operational traps), then §4 (what is deliberately not done). OTA follows the latest annotated tag, not later untagged SHAs. |
 | 2 | **[AUDIT-LEDGER.md](AUDIT-LEDGER.md)** | Which subsystems were *actually probed*, the conclusion, and where the guard lives. Start with its "怎么读这份文件" section: the file is appended to per round and is **not** organised by topic, so that section is the only reliable entry point. It states its own round count and line-scale — **this row deliberately states neither**, because both belong to a file that grows every round, and the version of this row that did cite a round count went stale twice. |
 | 3 | **[DEVIN-CONNECT-CUTOVER.md](DEVIN-CONNECT-CUTOVER.md)** | Production cutover runbook. `DEVIN_CONNECT` is what production actually runs (the code default is OFF; the deployment sets it), so this is not optional. Paid wire-calibration procedure in §8. |
 
@@ -78,7 +79,7 @@ Two sections are worth reading even though they sit in superseded files:
 
 ### The rest of the handoffs are archive
 
-Newest first. All thirteen archived files carry a banner naming the current handoff **and** a link back to this
+Newest first. Every archived handoff carries a banner naming the current handoff **and** a link back to this
 index, so whichever one you open by accident, you are two clicks from the right place. That is
 worth keeping: **`ls docs/` does not sort chronologically** — `-B.md` sorts before `.md` (so the
 original `08-04` sorts *after* B/C/D/E), and `HANDOFF-2026-08-05.md` has a wrong filename date

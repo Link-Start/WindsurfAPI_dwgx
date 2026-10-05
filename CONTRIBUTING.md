@@ -105,7 +105,7 @@ for s in test/mutations/*.json; do npm run mutate -- "$s"; done
 
 ### 审查与合并标准
 
-这个仓库的合并标准此前只以 review 评论形式存在（84 个 PR 里 7 条正式 review：#90 #142 #198 #232 #255 #256 #274，外加 ~40 条长评论）。以下是它的成文版;引文逐字未改,每条附出处。
+这个仓库的合并标准此前只以 review 评论形式存在（截至 2026-10-05 的 87 个 PR 里 7 条正式 review：#90 #142 #198 #232 #255 #256 #274，外加 ~40 条长评论）。以下是它的成文版;引文逐字未改,每条附出处。
 
 **元规则 —— 什么才算守卫(RC0):** 守卫只有在**把修复回退后它会变红、且是在生产实际走的那个形状上变红**,才算守卫。—— #252 / #261
 
@@ -261,8 +261,9 @@ coverage.
 Partial skips stay legal — platforms legitimately gate fixtures. The real-Git fixtures are the
 standing example: they skip on any host without `git` at a trusted absolute POSIX path, by
 design (`test/git-fixture-env.js`, asserted in `test/git-fixture-availability.test.js`). Declare
-what you accept on your host; the value is host-specific. The measured pair for a POSIX host
-with no wire base and no live credentials is:
+what you accept on your host; the value is host-specific — the sets below are what each host
+*measures*, not a universal list. The measured pair for a POSIX host with no wire base and no
+live credentials is:
 
 ```text
 GATE_INERT_SKIP_PATHS=test/wire-byte-identity.test.js;test/devin-connect-relogin-live.test.js
@@ -271,8 +272,15 @@ GATE_INERT_SKIP_PATHS=test/wire-byte-identity.test.js;test/devin-connect-relogin
 `test/wire-byte-identity.test.js` skips without `WIRE_BASE_TREE` because it is a CI-only
 comparison; `test/devin-connect-relogin-live.test.js` skips its whole suite at the describe
 level when not armed (`RELOGIN_LIVE=1` plus credentials) and reports `tests 0 / suites 1 /
-skipped 0`. A Windows host's set differs — it also lacks `/usr/bin/git`, so it adds the
-real-Git fixtures (`test/git-fixture-availability.test.js;test/mutate-verify-harness.test.js`).
+skipped 0`. A native Windows host measures four (2026-10-06 on the Windows machine these docs
+were written from): it also lacks `/usr/bin/git`, so `test/mutate-verify-harness.test.js` and
+`test/self-update-untracked-safety.test.js` execute nothing there (`REAL_GIT` is null;
+`test/git-fixture-env.js` requires git at a trusted absolute POSIX path). The full measured
+Windows set is:
+
+```text
+GATE_INERT_SKIP_PATHS=test/wire-byte-identity.test.js;test/devin-connect-relogin-live.test.js;test/mutate-verify-harness.test.js;test/self-update-untracked-safety.test.js
+```
 
 Semicolon- or newline-separated, repo-relative, `/` or `\`. The variable is an override with no
 default: unset means accept nothing, so an unreviewed file that starts executing nothing while
