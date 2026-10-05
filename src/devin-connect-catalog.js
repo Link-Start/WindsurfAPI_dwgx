@@ -26,7 +26,7 @@ import https from 'https';
 import { randomBytes } from 'crypto';
 import { log } from './config.js';
 import { parseFields, writeStringField, writeMessageField, writeVarintField } from './proto.js';
-import { getConnectToken, classifyUpstreamError } from './devin-connect.js';
+import { getConnectToken, classifyUpstreamError, MAX_ERROR_BODY_BYTES, ERROR_BODY_TRUNCATION_MARKER, createBoundedBodyAccumulator } from './devin-connect.js';
 
 // Transport seam: defaults to https.request. Swappable in tests so the non-200
 // classification path can be exercised without a real socket. Mirrors the
@@ -99,12 +99,27 @@ function unaryCall(path, token, { signal, timeoutMs = 30000, extraBody } = {}) {
       },
       signal,
     }, (res) => {
-      const chunks = [];
-      res.on('data', (c) => chunks.push(c));
+      // Bounded read: the response is attacker-controlled and its body is
+      // decoded for classification. Reading it unbounded is the availability
+      // bug createBoundedBodyAccumulator exists for — and on this path it has
+      // already taken the process down once: raw.toString('utf8') ran BEFORE
+      // the 200-byte slice, so a 600MiB body threw ERR_STRING_TOO_LONG inside
+      // this 'end' listener, which nothing catches.
+      const buffer = createBoundedBodyAccumulator();
+      res.on('data', buffer.onData);
       res.on('end', () => {
-        const raw = Buffer.concat(chunks);
+        const { raw, truncated } = buffer.finish();
         if (res.statusCode !== 200) {
-          const text = raw.toString('utf8').slice(0, 200);
+          // Slice BEFORE stringifying: only the classification window is
+          // decoded, never the whole body. The window is 200 bytes (error
+          // bodies are ASCII JSON/text, so bytes and characters coincide), and
+          // the truncation marker is appended AFTER it so an operator can tell
+          // a clipped body from a short one.
+          const text = raw.subarray(0, 200).toString('utf8')
+            + (truncated ? ERROR_BODY_TRUNCATION_MARKER : '');
+          if (truncated) {
+            log.warn(`[devin-connect] upstream ${res.statusCode} error body exceeded ${MAX_ERROR_BODY_BYTES} bytes; truncated for classification`);
+          }
           // Transient-first: the upstream wraps capacity ("high demand") and
           // backend ("internal error occurred (trace ID: ...)") faults inside a
           // 401/403 auth-shell on the unary probe path too — not just on
@@ -127,6 +142,14 @@ function unaryCall(path, token, { signal, timeoutMs = 30000, extraBody } = {}) {
           } catch { /* text body */ }
           const { code, message } = classifyUpstreamError(text, upstreamCode, res.statusCode);
           reject(Object.assign(new Error(`${path} HTTP ${res.statusCode}: ${message}`), { code, status: res.statusCode }));
+          return;
+        }
+        if (truncated) {
+          // A 200 body past the ceiling cannot be the single protobuf response
+          // this path expects; fail instead of decoding a prefix as if it were
+          // the whole message.
+          log.warn(`[devin-connect] ${path} response body exceeded ${MAX_ERROR_BODY_BYTES} bytes; truncated`);
+          reject(Object.assign(new Error(`${path} response body exceeded ${MAX_ERROR_BODY_BYTES} bytes; truncated`), { code: 'UPSTREAM_ERROR', status: res.statusCode }));
           return;
         }
         resolve(raw);

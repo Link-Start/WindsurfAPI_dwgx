@@ -52,7 +52,7 @@ const PATH = '/exa.api_server_pb.ApiServerService/GetChatMessage';
 const USER_JWT_PATH = '/exa.auth_pb.AuthService/GetUserJwt';
 const METADATA_USER_JWT_FIELD = 21;
 
-// Ceiling for a non-200 upstream error body. Generous next to any real
+// Ceiling for an untrusted upstream response body. Generous next to any real
 // Connect-RPC error — upstream returns a JSON envelope or a short text line —
 // and far below V8's ~512MiB string limit, so the toString() can never be the
 // thing that throws. 8MiB leaves room for a pathological proxy error page
@@ -62,14 +62,61 @@ const METADATA_USER_JWT_FIELD = 21;
 // error. Overridable so the ceiling itself is testable without allocating
 // megabytes per case; a non-positive or unparseable value falls back to the
 // default rather than disabling the cap, because "no cap" is the bug.
-const MAX_ERROR_BODY_BYTES = (() => {
+export const MAX_ERROR_BODY_BYTES = (() => {
   const raw = Number.parseInt(String(process.env.DEVIN_CONNECT_MAX_ERROR_BODY_BYTES ?? ''), 10);
   return Number.isSafeInteger(raw) && raw > 0 ? raw : 8 * 1024 * 1024;
 })();
 // Appended when the ceiling is hit, so the truncation is visible to whoever
 // reads the error rather than the error silently describing a prefix of
 // itself. Mirrors RESPONSE_STORE's TRUNCATION_MARKER.
-const ERROR_BODY_TRUNCATION_MARKER = '\n[... truncated: upstream error body exceeded the cap ...]';
+export const ERROR_BODY_TRUNCATION_MARKER = '\n[... truncated: upstream error body exceeded the cap ...]';
+
+/**
+ * Bounded accumulator for an upstream response body.
+ *
+ * EVERY reader that takes an HTTP body off the wire uses this — the streamChat
+ * non-200 branch, postConnectUnary (GetUserJwt) and the catalog unary probe
+ * (GetCliModelConfigs / GetUserStatus / AssignModel) — so the ceiling and the
+ * truncation behavior cannot drift between call sites.
+ *
+ * Why a ceiling at all: concatenating without one is an availability bug, not
+ * a parsing one. A misbehaving or hostile upstream can stream past V8's
+ * ~512MiB string limit, at which point Buffer.concat(...).toString('utf8')
+ * throws ERR_STRING_TOO_LONG. That throw happens inside the 'end' listener,
+ * where nothing catches it: it escapes as an uncaughtException and
+ * src/index.js exits the process, so one bad response from one upstream
+ * disconnects every tenant. Same shape as the decodeGrpcMessage guard in
+ * grpc.js:21-34.
+ *
+ * Keep a genuine prefix rather than whole chunks. Slicing the chunk that
+ * crosses the ceiling is what makes this correct for a body that arrives as
+ * one large chunk: dropping that chunk instead would leave nothing behind and
+ * the error would be a bare truncation marker describing no upstream output at
+ * all. The tail is discarded, never accumulated.
+ */
+export function createBoundedBodyAccumulator() {
+  const chunks = [];
+  let bytes = 0;
+  let truncated = false;
+  return {
+    onData(chunk) {
+      if (truncated) return;
+      const room = MAX_ERROR_BODY_BYTES - bytes;
+      if (chunk.length <= room) {
+        bytes += chunk.length;
+        chunks.push(chunk);
+        return;
+      }
+      if (room > 0) chunks.push(chunk.subarray(0, room));
+      bytes = MAX_ERROR_BODY_BYTES;
+      truncated = true;
+    },
+    /** @returns {{ raw: Buffer, truncated: boolean }} */
+    finish() {
+      return { raw: Buffer.concat(chunks), truncated };
+    },
+  };
+}
 
 function validatedAccountConnectHost(host) {
   const refused = () => Object.assign(new Error('ERR_CONNECT_ACCOUNT_HOST_NOT_ALLOWED'), {
@@ -790,11 +837,22 @@ function postConnectUnary(host, path, framed, sessionToken, signal) {
         }),
         signal,
       }, (res) => {
-        const chunks = [];
-        res.on('data', (c) => chunks.push(c));
+        // Bounded read even though a non-200 body is discarded below: the
+        // response is attacker-controlled and reading it unbounded is the same
+        // availability bug the streamChat non-200 branch is guarded against
+        // (see createBoundedBodyAccumulator). The same ceiling also covers a
+        // 200 body — a unary frame (GetUserJwt) is small, so a body past the
+        // ceiling is malformed either way and is treated as such rather than
+        // parsed from a truncated prefix.
+        const buffer = createBoundedBodyAccumulator();
+        res.on('data', buffer.onData);
         res.on('end', () => {
+          const { raw: body, truncated } = buffer.finish();
+          if (truncated) {
+            log.warn(`[devin-connect] ${path} response body exceeded ${MAX_ERROR_BODY_BYTES} bytes; truncated`);
+            return done(null);
+          }
           if (res.statusCode !== 200) return done(null);
-          const body = Buffer.concat(chunks);
           // Connect envelope: [flags][len:4BE][payload]. A trailer-only response
           // (flag 0x02) carries no message and must not be parsed as one.
           if (body.length < 5) return done(null);
@@ -2503,42 +2561,17 @@ export async function* streamChat({
     // free-tier /upgrade, UNAUTHORIZED, RATE_LIMITED) instead of an opaque
     // frame-parse failure from feeding an error body to StreamingFrameParser.
     if (res.statusCode && res.statusCode !== 200) {
-      const chunks = [];
       // Bound the buffer. An error body is a diagnostic, not a payload: the
       // only thing downstream does with it is classifyUpstreamError, which
-      // reads a code, a message and an optional reset window. Concatenating
-      // without a ceiling is an availability bug, not a parsing one — a
-      // misbehaving or hostile upstream can stream past V8's ~512MiB string
-      // limit, at which point Buffer.concat(...).toString('utf8') throws
-      // ERR_STRING_TOO_LONG. That throw happens inside the 'end' listener,
-      // where nothing catches it: it escapes as an uncaughtException and
-      // src/index.js exits the process, so one bad response from one upstream
-      // disconnects every tenant. Same shape as the decodeGrpcMessage guard in
-      // grpc.js:21-34.
-      //
-      // Keep a genuine prefix rather than whole chunks. Slicing the chunk that
-      // crosses the ceiling is what makes this correct for a body that arrives
-      // as one large chunk: dropping that chunk instead would leave nothing
-      // behind and the error would be a bare truncation marker describing no
-      // upstream output at all. The tail is discarded, never held.
-      let bodyBytes = 0;
-      let bodyTruncated = false;
-      res.on('data', (c) => {
-        if (bodyTruncated) return;
-        const room = MAX_ERROR_BODY_BYTES - bodyBytes;
-        if (c.length <= room) {
-          bodyBytes += c.length;
-          chunks.push(c);
-          return;
-        }
-        if (room > 0) chunks.push(c.subarray(0, room));
-        bodyBytes = MAX_ERROR_BODY_BYTES;
-        bodyTruncated = true;
-      });
+      // reads a code, a message and an optional reset window. Reading it
+      // unbounded is an availability bug — see createBoundedBodyAccumulator
+      // for the crash it causes and why the crossing chunk is sliced.
+      const buffer = createBoundedBodyAccumulator();
+      res.on('data', buffer.onData);
       res.on('end', () => {
-        const raw = Buffer.concat(chunks);
-        const body = raw.toString('utf8') + (bodyTruncated ? ERROR_BODY_TRUNCATION_MARKER : '');
-        if (bodyTruncated) {
+        const { raw, truncated } = buffer.finish();
+        const body = raw.toString('utf8') + (truncated ? ERROR_BODY_TRUNCATION_MARKER : '');
+        if (truncated) {
           log.warn(`[devin-connect] upstream ${res.statusCode} error body exceeded ${MAX_ERROR_BODY_BYTES} bytes; truncated for classification`);
         }
         // Preserve the upstream Connect-RPC error code (audit F2): the trailer
