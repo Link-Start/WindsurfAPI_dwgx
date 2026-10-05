@@ -2513,8 +2513,8 @@ export async function* streamChat({
       // ERR_STRING_TOO_LONG. That throw happens inside the 'end' listener,
       // where nothing catches it: it escapes as an uncaughtException and
       // src/index.js exits the process, so one bad response from one upstream
-      // disconnects every tenant. Same shape as the decodeURIContent guard in
-      // grpc.js:19-24.
+      // disconnects every tenant. Same shape as the decodeGrpcMessage guard in
+      // grpc.js:21-34.
       //
       // Keep a genuine prefix rather than whole chunks. Slicing the chunk that
       // crosses the ceiling is what makes this correct for a body that arrives
