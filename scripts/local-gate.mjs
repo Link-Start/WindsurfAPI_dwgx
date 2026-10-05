@@ -70,8 +70,11 @@ function execute(command, args, root, env) {
  * The environment variable is an OVERRIDE, never a default: an empty value
  * means "accept nothing", so the gate fails on every inert file. Pre-seeding a
  * default list would recreate the original defect with extra steps — a file
- * that becomes inert through a new import-time throw would inherit acceptance
- * it was never reviewed for.
+ * that becomes inert for a new reason would inherit acceptance it was never
+ * reviewed for. Inert means it declared a suite or tests and executed none —
+ * declare it or the gate is red; a file that declares nothing at all is no
+ * evidence either. A load-time throw is not one of these: it fails the file
+ * (`tests 1 / fail 1`, exit 1), which the fail count already catches.
  */
 export function inertSkipAllowlist(env = process.env) {
   return new Set(String(env.GATE_INERT_SKIP_PATHS || '')

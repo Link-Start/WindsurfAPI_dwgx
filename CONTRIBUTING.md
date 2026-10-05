@@ -204,17 +204,26 @@ coverage.
 
 Partial skips stay legal — platforms legitimately gate fixtures. The real-Git fixtures are the
 standing example: they skip on any host without `git` at a trusted absolute POSIX path, by
-design (`test/git-fixture-env.js`, asserted in `test/git-fixture-availability.test.js`). On such
-a host, declare what you accept:
+design (`test/git-fixture-env.js`, asserted in `test/git-fixture-availability.test.js`). Declare
+what you accept on your host; the value is host-specific. The measured pair for a POSIX host
+with no wire base and no live credentials is:
 
 ```text
-GATE_INERT_SKIP_PATHS=test/git-fixture-availability.test.js;test/mutate-verify-harness.test.js;...
+GATE_INERT_SKIP_PATHS=test/wire-byte-identity.test.js;test/devin-connect-relogin-live.test.js
 ```
 
+`test/wire-byte-identity.test.js` skips without `WIRE_BASE_TREE` because it is a CI-only
+comparison; `test/devin-connect-relogin-live.test.js` skips its whole suite at the describe
+level when not armed (`RELOGIN_LIVE=1` plus credentials) and reports `tests 0 / suites 1 /
+skipped 0`. A Windows host's set differs — it also lacks `/usr/bin/git`, so it adds the
+real-Git fixtures (`test/git-fixture-availability.test.js;test/mutate-verify-harness.test.js`).
+
 Semicolon- or newline-separated, repo-relative, `/` or `\`. The variable is an override with no
-default: unset means accept nothing, so an unreviewed file that turns inert through a new
-load-time throw still fails. Entries that match nothing are reported as `unused` — a stale entry
-is a claim about the host that has stopped being true.
+default: unset means accept nothing, so an unreviewed file that starts executing nothing while
+declaring work — the shape the census names — still fails. A module that throws while loading is
+not that shape: it fails the file (`tests 1 / fail 1`, exit 1), which the `fail` count has always
+caught; a file that declares nothing at all is no evidence either. Entries that match nothing are
+reported as `unused` — a stale entry is a claim about the host that has stopped being true.
 
 **Full gate on Linux/POSIX** (Node, npm, Git and Bash installed; clean committed checkout):
 
