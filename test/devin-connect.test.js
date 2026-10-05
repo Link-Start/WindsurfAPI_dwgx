@@ -2514,13 +2514,14 @@ describe('non-200 error body is bounded', () => {
   });
 
   it('never treats a bad override as "no ceiling"', async () => {
-    // Every other case here uses a small body, so an implementation that
-    // returned Infinity for an unparseable value would pass them all. This one
-    // pins the fallback to a real number: the default is 8MiB, so a 1KiB body
-    // must survive whole and unmarked.
-    const err = await withCap('not-a-number', Buffer.alloc(1024, 0x43), 500);
-    assert.doesNotMatch(err.message, /truncated/,
-      'a 1KiB body is far below the 8MiB default and must not be marked truncated');
-    assert.equal(err.message.length, 1024, 'the whole body must survive');
+    // A body larger than the 8MiB default is what makes this case load-bearing:
+    // a 1KiB body is kept whole by an 8MiB ceiling AND by no ceiling at all, so
+    // it cannot tell the two apart. Only a finite fallback truncates this one,
+    // at exactly the default ceiling.
+    const err = await withCap('not-a-number', Buffer.alloc(8 * 1024 * 1024 + 64, 0x43), 500);
+    const marker = '\n[... truncated: upstream error body exceeded the cap ...]';
+    assert.match(err.message, /truncated/, 'a body above the default ceiling must be truncated');
+    assert.equal(err.message.length, 8 * 1024 * 1024 + marker.length,
+      'an unparseable override must fall back to the real 8MiB ceiling, not to no ceiling');
   });
 });
