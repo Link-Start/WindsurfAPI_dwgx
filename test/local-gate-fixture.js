@@ -37,10 +37,11 @@ export async function verifyLocalGateFixture() {
     setReporter('reporter changed without a summary');
     result = run(); assert.equal(result.status, 2); assert.match(result.stdout, /FAIL test:release/);
     assert.doesNotMatch(result.stdout, /INCREMENTAL GATE: PASS/);
-    // A file that declares tests but executes none is not evidence. This is the
-    // shape a load-time throw produces from outside the runner: node --test
-    // reports every declared test as skipped and still exits 0, so a suite that
-    // never ran would otherwise be certified green. A PARTIAL skip stays legal —
+    // A file that declares tests but executes none is not evidence: node --test
+    // hands back `skipped N` with exit 0, so a suite that never ran would
+    // otherwise be certified green. (The shape is NOT a load-time throw — that
+    // fails the file, `tests 1 / fail 1`, exit 1, measured on node v24.21.0 —
+    // this census guards deliberate skips.) A PARTIAL skip stays legal —
     // platforms legitimately gate fixtures — so the discriminator is
     // pass+fail==0 on a file that declared tests, not the skip total.
     const inert = 'Running test shard 1/1: 1/1 files\n- test/fixture.test.js\n'
@@ -69,6 +70,22 @@ export async function verifyLocalGateFixture() {
     // Windows-style separators in the declaration still match.
     result = run({ GATE_INERT_SKIP_PATHS: 'test\\fixture.test.js' });
     assert.equal(result.status, 0, result.stdout + result.stderr);
+    // The other zero-execution shape: a suite skipped whole at the describe
+    // level reports `tests 0` with `suites 1` as its only witness and no
+    // skipped test entries. While the census required tests>0 it was invisible
+    // — the gate PASSed while a file that declared a suite ran nothing.
+    const skippedSuite = 'Running test shard 1/1: 1/1 files\n- test/fixture.test.js\n'
+      + ['tests 0', 'pass 0', 'fail 0', 'skipped 0', 'cancelled 0', 'todo 0', 'suites 1']
+        .map(line => `[test/fixture.test.js] # ${line}\n`).join('');
+    setReporter(skippedSuite);
+    result = run(); assert.equal(result.status, 1, result.stdout + result.stderr);
+    assert.match(result.stdout, /FAIL test:release exit=1/);
+    assert.match(result.stdout, /ran no tests and are not declared inert/);
+    assert.match(result.stdout, /test\/fixture\.test\.js \(0 tests, suites 1\)/,
+      'the suite witness must be shown, not a bare (0)');
+    result = run({ GATE_INERT_SKIP_PATHS: 'test/fixture.test.js' });
+    assert.equal(result.status, 0, result.stdout + result.stderr);
+    assert.match(result.stdout, /1 inert file\(s\), 1 declared/);
     setReporter(healthy.replace('pass 1', 'pass 0').replace('fail 0', 'fail 1'), 1);
     result = run(); assert.equal(result.status, 1); assert.match(result.stdout, /FAIL test:release exit=1/);
     setReporter(healthy);

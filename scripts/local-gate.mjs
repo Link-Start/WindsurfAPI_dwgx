@@ -27,11 +27,14 @@ export function releaseEvidence(output) {
   }
   if (rows.size !== expected) throw new Error(`release parsed ${rows.size}/${expected} files`);
   const totals = { tests: 0, pass: 0, fail: 0, skipped: 0, cancelled: 0, todo: 0 };
-  // Per-file skip census. A file whose every test skipped contributes zero to
-  // `pass` while still counting toward `tests`, which is exactly the shape a
-  // load-time throw produces: node --test reports the declared tests as
-  // `skipped` and exits 0. Summing per file lets the caller name the offenders
-  // instead of only reporting a total it cannot act on.
+  // Per-file skip census. Two shapes execute nothing while still declaring
+  // work: a file whose every test skipped (zero pass+fail, tests counted), and
+  // a suite skipped whole at the describe level (zero tests, with `suites N`
+  // as its only witness — the same shape the runner accepts). A load-time
+  // throw is NOT one of them: measured on node v24.21.0 it fails the file
+  // (`tests 1 / fail 1`, exit 1), which counts.fail already catches. Summing
+  // per file lets the caller name the offenders instead of only reporting a
+  // total it cannot act on.
   const inert = [];
   for (const [file, row] of rows) {
     const zeroWithSuite = row.tests === 0 && Number.isSafeInteger(suiteRows.get(file)) && suiteRows.get(file) > 0;
@@ -40,7 +43,9 @@ export function releaseEvidence(output) {
         || row.tests !== row.pass + row.fail + row.skipped + row.cancelled + row.todo) {
       throw new Error('incomplete release summary');
     }
-    if (row.tests > 0 && row.pass + row.fail === 0) inert.push({ file, tests: row.tests });
+    if ((row.tests > 0 && row.pass + row.fail === 0) || zeroWithSuite) {
+      inert.push({ file, tests: row.tests, suites: zeroWithSuite ? suiteRows.get(file) : 0 });
+    }
     for (const key of Object.keys(totals)) totals[key] += row[key];
   }
   return { files: rows.size, ...totals, inert };
@@ -141,7 +146,7 @@ export async function runGate(root = process.cwd()) {
           if (undeclared.length) {
             result.code = 1;
             detail += ` — ${undeclared.length} ran no tests and are not declared inert: `
-              + undeclared.map(f => `${f.file} (${f.tests})`).join(', ')
+              + undeclared.map(f => `${f.file} (${f.tests > 0 ? f.tests : `0 tests, suites ${f.suites}`})`).join(', ')
               + (accepted.size ? '' : ' (set GATE_INERT_SKIP_PATHS to accept deliberate platform gates)');
           }
         }
