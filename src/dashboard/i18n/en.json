@@ -1129,7 +1129,8 @@
         "spendTitle": "Lifetime spend",
         "spendRequests": "Requests",
         "spendTokens": "Total tokens",
-        "spendCredits": "Credit cost"
+        "spendCredits": "Credit cost",
+        "spendAcu": "ACU cost (decoded)"
       }
     }
   },

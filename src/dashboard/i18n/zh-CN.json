@@ -1129,7 +1129,8 @@
         "spendTitle": "累计花费",
         "spendRequests": "请求数",
         "spendTokens": "总 token 数",
-        "spendCredits": "信用花费"
+        "spendCredits": "信用花费",
+        "spendAcu": "ACU 花费（解码值）"
       }
     }
   },
