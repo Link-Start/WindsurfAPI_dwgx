@@ -45,8 +45,8 @@ function parseAnthropicEvents(raw) {
 }
 
 describe('Thinking outbound contract (messages handler)', () => {
-  it('(a) non-stream: reasoning_content -> thinking block, signature ONLY when reasoning_signature present', async () => {
-    // Case 1: reasoning_content without reasoning_signature (signature omitted entirely)
+  it('(a) non-stream: reasoning_content -> thinking block, signature always present ("" when reasoning_signature missing)', async () => {
+    // Case 1: reasoning_content without reasoning_signature (signature key kept as "")
     const resNoSig = await handleMessages({
       model: 'claude-sonnet-4.6',
       thinking: { type: 'enabled' },
@@ -72,7 +72,7 @@ describe('Thinking outbound contract (messages handler)', () => {
     const thinkingNoSig = resNoSig.body.content.find(c => c.type === 'thinking');
     assert.ok(thinkingNoSig, 'thinking block should be emitted');
     assert.equal(thinkingNoSig.thinking, 'thought process');
-    assert.equal(thinkingNoSig.signature, undefined, 'signature must be undefined when reasoning_signature is missing');
+    assert.equal(thinkingNoSig.signature, '', 'signature must be "" (key present) when reasoning_signature is missing');
 
     // Case 2: reasoning_content WITH reasoning_signature (signature forwarded verbatim)
     const resWithSig = await handleMessages({
@@ -135,6 +135,8 @@ describe('Thinking outbound contract (messages handler)', () => {
     const events1 = parseAnthropicEvents(resFake1.body);
     const sigDeltas1 = events1.filter(e => e.event === 'content_block_delta' && e.data.delta?.type === 'signature_delta');
     assert.equal(sigDeltas1.length, 0, 'no signature_delta should be emitted when reasoning_signature is absent');
+    const thinkingStart1 = events1.find(e => e.event === 'content_block_start' && e.data.content_block?.type === 'thinking');
+    assert.equal(thinkingStart1.data.content_block.signature, '', 'thinking content_block_start must carry signature key');
 
     // Case 2: streaming thinking WITH signature (signature_delta emitted right before content_block_stop for thinking block)
     const streamWithSig = await handleMessages({
