@@ -2426,7 +2426,10 @@ describe('non-200 error body is bounded', () => {
   });
 
   // The module reads the cap at load, so a case that needs a different ceiling
-  // has to load a fresh copy of the module graph under its own env.
+  // has to load a fresh copy of the module graph under its own env. `body` may
+  // be an array of chunks: production delivers an error body as many ≤64 KiB
+  // socket chunks, and only a test that emits more than one can pin the
+  // accumulator that counts them.
   const withCap = async (cap, body, statusCode = 500) => {
     const dir = mkdtempSync(join(tmpdir(), 'dc-cap-'));
     const prev = process.env.DEVIN_CONNECT_MAX_ERROR_BODY_BYTES;
@@ -2438,7 +2441,10 @@ describe('non-200 error body is bounded', () => {
         const res = new EventEmitter();
         res.statusCode = statusCode;
         if (cb) cb(res);
-        queueMicrotask(() => { res.emit('data', body); res.emit('end'); });
+        queueMicrotask(() => {
+          for (const chunk of Array.isArray(body) ? body : [body]) res.emit('data', chunk);
+          res.emit('end');
+        });
         return req;
       });
       const err = await mod.streamChat({
@@ -2465,6 +2471,20 @@ describe('non-200 error body is bounded', () => {
     // ceiling + marker + nothing else. The earlier form compared against a
     // hand-counted marker length and was off by one; derive it instead.
     assert.equal(err.message.length, 64 + marker.length);
+  });
+
+  it('counts the ceiling across data events, not per chunk', async () => {
+    // Every other case emits the body as ONE event, so an implementation that
+    // never accumulated `bodyBytes` across events (production delivers many
+    // ≤64 KiB socket chunks) would pass them all while re-opening unbounded
+    // buffering. Three 32-byte chunks against a 64-byte ceiling: the first two
+    // exactly fill it, the third must trigger truncation instead of extending
+    // the buffer — kept bytes are the ceiling plus the marker, and the third
+    // chunk is never kept.
+    const err = await withCap(64, [Buffer.alloc(32, 0x41), Buffer.alloc(32, 0x42), Buffer.alloc(32, 0x43)]);
+    const marker = '\n[... truncated: upstream error body exceeded the cap ...]';
+    assert.equal(err.message, 'A'.repeat(32) + 'B'.repeat(32) + marker,
+      'the ceiling must be counted across data events: keep A+B (64 bytes) + marker, never C');
   });
 
   it('keeps the body a genuine prefix of the real one, not a reordering', async () => {
