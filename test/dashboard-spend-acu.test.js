@@ -20,8 +20,9 @@
 // as a settled number where the truth is "not decoded" — the outcome #239's
 // acceptance criteria rule out. Show it when present; never fake it.
 //
-// Red conditions: delete the ACU cell, invert `acu > 0`, or unwire the
-// renderAccountDetail call — each turns an assertion below red.
+// Red conditions: delete the ACU cell, invert `acu > 0`, unwire the
+// renderAccountDetail call, or flatten a sub-cent magnitude to `0` — each
+// turns an assertion below red.
 
 import { before, describe, it } from 'node:test';
 import assert from 'node:assert/strict';
@@ -53,6 +54,17 @@ function extractSpendCells() {
 
 const I18n = { t: (k) => `i18n:${k}` };
 
+// The text content of the ACU cell's value span, or null when the cell is absent.
+function acuCellValue(html) {
+  const m = html.match(/<span class="k">i18n:account\.detail\.runtime\.spendAcu<\/span><span class="v"[^>]*>([^<]*)<\/span>/);
+  return m ? m[1] : null;
+}
+
+// Parse a rendered number back into a Number, tolerating comma decimal-separators.
+function asNumber(text) {
+  return Number(String(text).replace(/\s/g, '').replace(',', '.'));
+}
+
 let renderSpendCells;
 before(() => { renderSpendCells = extractSpendCells(); });
 
@@ -67,6 +79,28 @@ describe('account detail renders the decoded ACU cost (#239)', () => {
       'the credit cell must keep rendering alongside it');
     assert.doesNotMatch(html, /3[.,]75/,
       'ACU and credit are different units — the two cells must never be added together (#239)');
+  });
+
+  it('renders the canonical sub-cent ACU value (#22 wire fixture) as a non-zero magnitude', () => {
+    // 0.0006735000060871243 is the decoded committed_acu_cost the repo's own
+    // opt-in fixture pins (test/acu-opt-in-decode.test.js:16). A 2-decimal
+    // formatter flattens it to the literal "0" — a settled-looking zero on
+    // exactly the opt-in deployment this cell exists for (#239).
+    const CANONICAL_ACU = 0.0006735000060871243;
+    const html = renderSpendCells({ requests: 1, totalTokens: 10, acuCost: CANONICAL_ACU }, I18n);
+    const text = acuCellValue(html);
+    assert.notEqual(text, null, 'the sub-cent ACU must still render its cell');
+    assert.notEqual(text, '0', 'sub-cent ACU rendered as a literal "0" — the magnitude was flattened away');
+    const n = asNumber(text);
+    assert.ok(n > 0.0006 && n < 0.0007, `expected the magnitude ~6.7e-4, got "${text}"`);
+  });
+
+  it('does not flatten other sub-cent magnitudes either', () => {
+    const html = renderSpendCells({ acuCost: 0.004 }, I18n);
+    const text = acuCellValue(html);
+    assert.notEqual(text, null, 'a sub-cent ACU still renders its cell');
+    const n = asNumber(text);
+    assert.ok(n > 0.003 && n < 0.005, `expected the magnitude ~0.004, got "${text}"`);
   });
 
   it('omits the ACU cell when nothing was decoded (default-off deployment)', () => {

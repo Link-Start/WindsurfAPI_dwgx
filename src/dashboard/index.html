@@ -6873,13 +6873,15 @@ void main(){ vec3 s=texture(u_scene,v_uv).rgb; vec3 g=texture(u_glow,v_uv).rgb; 
     const s = sp || {};
     const fmt = (n) => (Number(n) || 0).toLocaleString();
     const frac = (n) => (Math.round(n * 100) / 100).toLocaleString(undefined, { maximumFractionDigits: 2 });
+    // Sub-cent ACU totals are real (canonical #22 decode: 0.0006735…); two decimals would flatten them to "0", so keep 4 significant digits below 0.01.
+    const acuFmt = (n) => (n > 0 && n < 0.01) ? n.toLocaleString(undefined, { maximumSignificantDigits: 4 }) : frac(n);
     const credits = Number(s.creditCost) || 0;
     const acu = Number(s.acuCost) || 0;
     return `<div class="detail-kv">
               <span class="k">${T('spendRequests')}</span><span class="v" style="font-variant-numeric:tabular-nums">${fmt(s.requests)}</span>
               <span class="k">${T('spendTokens')}</span><span class="v" style="font-variant-numeric:tabular-nums">${fmt(s.totalTokens)}</span>
               ${credits > 0 ? `<span class="k">${T('spendCredits')}</span><span class="v" style="font-variant-numeric:tabular-nums">${frac(credits)}</span>` : ''}
-              ${acu > 0 ? `<span class="k">${T('spendAcu')}</span><span class="v" style="font-variant-numeric:tabular-nums">${frac(acu)}</span>` : ''}
+              ${acu > 0 ? `<span class="k">${T('spendAcu')}</span><span class="v" style="font-variant-numeric:tabular-nums">${acuFmt(acu)}</span>` : ''}
             </div>`;
   },
 
