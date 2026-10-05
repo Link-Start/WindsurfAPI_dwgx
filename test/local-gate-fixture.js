@@ -34,6 +34,14 @@ export async function verifyLocalGateFixture() {
     let result = run(); assert.equal(result.status, 0, result.stdout + result.stderr);
     assert.match(result.stdout, /PASS test:release exit=0 — 1 pass \/ 0 fail \/ 1 skip/);
     assert.match(result.stdout, /SKIP mutation EXECUTION/, 'the gate must still say what it does not run');
+    // A declaration that matches nothing is a stale claim about the host, and
+    // it must be reported whether or not some other file is inert — with no
+    // inert files at all the report used to be skipped, which is exactly when
+    // a stale entry is the only signal there is.
+    result = run({ GATE_INERT_SKIP_PATHS: 'test/other.test.js' });
+    assert.equal(result.status, 0, result.stdout + result.stderr);
+    assert.match(result.stdout, /0 inert file\(s\), 1 declared \(unused: test\/other\.test\.js\)/);
+    assert.match(result.stdout, /INCREMENTAL GATE: PASS/, 'a stale declaration is reported, not fatal');
     setReporter('reporter changed without a summary');
     result = run(); assert.equal(result.status, 2); assert.match(result.stdout, /FAIL test:release/);
     assert.doesNotMatch(result.stdout, /INCREMENTAL GATE: PASS/);

@@ -134,7 +134,11 @@ export async function runGate(root = process.cwd()) {
         // which paths this host is not running, and the gate says so in the
         // verdict. GATE_INERT_SKIP_PATHS has no default, so a file that starts
         // skipping for a new reason is reported rather than inherited.
-        if (counts.inert.length && result.code === 0) {
+        //
+        // The allowlist is read even when no file is inert: a declaration that
+        // matches nothing is a stale claim about the host, and reporting it
+        // must not depend on some other file happening to be inert.
+        if (result.code === 0) {
           const accepted = inertSkipAllowlist(env);
           const inert = counts.inert.map(f => f.file.replace(/\\/g, '/'));
           const undeclared = counts.inert.filter(f => !accepted.has(f.file.replace(/\\/g, '/')));
