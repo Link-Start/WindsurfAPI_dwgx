@@ -74,10 +74,12 @@ function devinCliMode(env = process.env) {
  * operator flips it.
  *
  * NOTE (unverified, needs live probe): routing a model like claude-4.5-sonnet
- * here makes Devin the *nominal* backend, but the current ACP path only passes
- * the requested model name as a prompt hint (devin-acp.js session/prompt) — it
- * does NOT switch Devin's underlying core to that model. Whether Devin can
- * actually serve a specific model is an open question gated on a live probe.
+ * here makes Devin the *nominal* backend. The ACP path passes that model to
+ * the CLI launch as `devin acp --model <key>` (devin-acp.js:530-531) and ALSO
+ * adds a prompt-side hint alongside it (devin-acp.js:579-582). Whether the
+ * CLI's `--model` actually switches its underlying core is NOT determined by
+ * this repository — it needs a live probe against a real account, as does
+ * whether Devin can actually serve a specific model.
  */
 function devinOnlyEnabled(env = process.env) {
   return getBackendSwitch('devinOnly', env);
