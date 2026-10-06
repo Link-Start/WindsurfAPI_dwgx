@@ -116,6 +116,20 @@ describe('the shared guard rejects a textless assistant tail (predicate A)', () 
     assert.equal(res.body.error.param, 'messages');
     assert.match(res.body.error.message, /must end with a user message or a tool result/);
   });
+
+  it('runs first: a conversation violating both predicates reports the assistant-tail error', async () => {
+    // Predicate A is evaluated before predicate B, so an empty newest user turn
+    // behind an assistant tail reports "must end with a user message…", not
+    // "empty content". Pinned because swapping the two checks would otherwise
+    // red nothing, and "which 400 wins" is a decision, not an accident.
+    const res = await handleChatCompletions(chatBody([
+      { role: 'user', content: '' },
+      { role: 'assistant', content: 'x' },
+    ]), CTX);
+    assert.equal(res.status, 400);
+    assert.match(res.body.error.message, /must end with a user message or a tool result/);
+    assert.doesNotMatch(res.body.error.message, /empty content/);
+  });
 });
 
 describe('the guard runs before the streaming path', () => {
