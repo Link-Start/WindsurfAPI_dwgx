@@ -34,12 +34,27 @@ function safeJsonParse(value) {
   try { return JSON.parse(value); } catch { return null; }
 }
 
-function normalizeMessageContent(content) {
+// `toolOutput` — tool results (function_call_output / custom_tool_call_output
+// `output`) are JSON payloads: an array with no typed content block keeps the
+// pre-061d32f JSON rendering. Message content must NOT take that path —
+// stringifying `[{text:'hi'}]` into the literal `'[{"text":"hi"}]'` fed the
+// model JSON junk instead of the text, and stringifying `[{}]` / `[null]`
+// masked an empty turn from the shared tail guard that already 400s those
+// shapes on /v1/chat/completions. Message arrays run through the part loop
+// below instead, whose own rule is: string parts and `{text}` parts become
+// text parts, nulls are skipped, and a textless array falls through to the
+// guard as an empty turn. The string case is a deliberate divergence from the
+// chat surface — its empty-content guard counts only `p.text` and typed
+// non-text parts (chat.js:3016-3019), so a newest-turn `["hi"]` answers 400
+// there while this converter materialises it as text. The `{text}` case does
+// match the chat layer (the guard counts it; the cascade flattener reads it,
+// client.js:133-134). Unify only with a measurement, not by editing a pin.
+function normalizeMessageContent(content, { toolOutput = false } = {}) {
   if (typeof content === 'string') return content;
   if (!Array.isArray(content)) return stringifyMaybe(content);
 
   const hasContentBlock = content.some(part => part && typeof part === 'object' && typeof part.type === 'string');
-  if (!hasContentBlock) {
+  if (!hasContentBlock && toolOutput) {
     return stringifyMaybe(content);
   }
 
@@ -72,6 +87,12 @@ function normalizeMessageContent(content) {
       } else {
         out.push(part);
       }
+    } else if (typeof part.type !== 'string' && typeof part.text === 'string') {
+      // Untyped part carrying text. The shared chat layer already coerces this
+      // shape (its guard counts `p.text`; the wire builder reads it), but
+      // normalise it to a real text part here so typed-only downstream steps —
+      // identity neutralisation (identity-neutralize.js:346) — still see it.
+      out.push({ type: 'text', text: part.text });
     } else {
       out.push(part);
     }
@@ -433,7 +454,7 @@ export function responsesToChat(body) {
         messages.push({
           role: 'tool',
           tool_call_id: item.call_id || item.id,
-          content: normalizeMessageContent(item.output ?? ''),
+          content: normalizeMessageContent(item.output ?? '', { toolOutput: true }),
         });
       } else if (item.type === 'custom_tool_call') {
         flushToolCalls.add({
@@ -447,7 +468,7 @@ export function responsesToChat(body) {
         messages.push({
           role: 'tool',
           tool_call_id: item.call_id || item.id,
-          content: normalizeMessageContent(item.output ?? ''),
+          content: normalizeMessageContent(item.output ?? '', { toolOutput: true }),
         });
       }
     }
