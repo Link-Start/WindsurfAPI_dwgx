@@ -1,10 +1,10 @@
 {
-  "_baseline_provenance": "MEASURED 2026-10-07 on the author's Windows box, Node v24.19.0, worktree .claude/worktrees/tail-contract at master df9d429 (uncommitted additions). Declared value 15. Exact command: `node --import ./scripts/mutation-network-deny.mjs --import ./test/setup-env.mjs --test --test-reporter=tap --test-force-exit test/request-tail-contract.test.js` -> `# tests 15 / # pass 15 / # fail 0 / # skipped 0 / # todo 0`. Re-measured with the harness's OWN counting semantics: `node scripts/spec-baseline-check.mjs request-tail-contract.json` -> `ok request-tail-contract.json: 15 pass + 0 approved skips = 15 [MEASURED_NO_SKIPS]`. The five mutations below were applied by hand in this worktree (same anchor -> replacement bytes) and each redded the suite: A -> 10 pass / 5 fail, B -> 10 pass / 5 fail, non-text -> 14 pass / 1 fail, Anthropic drop -> 13 pass / 2 fail, Gemini drop -> 13 pass / 2 fail. The mutation harness itself cannot EXECUTE on this host (`scripts/mutation-harness-utils.mjs` requires git at a trusted absolute POSIX path); the sweep runs on the Linux bench.",
-  "_scope_note": "The request-tail policy (docs/REQUEST-TAIL-CONTRACT.md, PR #274): both 400s live in one shared block in chat.js (_handleChatCompletionsInner), and the Anthropic/Gemini converters drop turns that yield no text/image/tool BEFORE delegating there. Each mutation below removes one half of that contract; the pinned tests must red. Chat-surface assertions drive the REAL handleChatCompletions (a mock would bypass the guard); the converter assertions drive the real converters with a recording chat handler, because what they pin is what the converter forwards (drop → served, kept-with-text → the shared 400 re-enveloped).",
+  "_baseline_provenance": "MEASURED 2026-10-07 on the author's Windows box, Node v24.19.0, worktree .claude/worktrees/tail-contract at master df9d429 (uncommitted additions). Declared value 16. Exact command: `node --import ./scripts/mutation-network-deny.mjs --import ./test/setup-env.mjs --test --test-reporter=tap --test-force-exit test/request-tail-contract.test.js` -> `# tests 16 / # pass 16 / # fail 0 / # skipped 0 / # todo 0`. Re-measured with the harness's OWN counting semantics: `node scripts/spec-baseline-check.mjs request-tail-contract.json` -> `ok request-tail-contract.json: 16 pass + 0 approved skips = 16 [MEASURED_NO_SKIPS]`. Every mutation below was applied by hand in this worktree with its own anchor -> replacement bytes and redded this file's suite; the mutation harness itself cannot EXECUTE on this host (`scripts/mutation-harness-utils.mjs` requires git at a trusted absolute POSIX path), so the sweep runs on the Linux bench.",
+  "_scope_note": "The request-tail policy (docs/REQUEST-TAIL-CONTRACT.md, PR #274): both 400s live in one shared block in chat.js (_handleChatCompletionsInner), the Anthropic/Gemini converters drop turns that yield no text/image/tool BEFORE delegating there, and /v1/responses must reach the same guard (its converter keeps a zero-length content array empty instead of stringifying it to \"[]\"). Each mutation below removes one half of that contract; the pinned tests must red. Chat-surface assertions drive the REAL handleChatCompletions (a mock would bypass the guard); the converter assertions drive the real converters with a recording chat handler, because what they pin is what the converter forwards (drop → served, kept-with-text → the shared 400 re-enveloped).",
   "tests": [
     "test/request-tail-contract.test.js"
   ],
-  "expectBaselinePass": 15,
+  "expectBaselinePass": 16,
   "mutations": [
     {
       "name": "predicate A disabled — an unanswerable tail (assistant-terminated, the Anthropic prefill shape) sails through to backend/account selection instead of the measured 400: the upstream answers UPSTREAM_INTERNAL and two consecutive of those quarantine the account for 120s",
@@ -35,6 +35,12 @@
       "file": "src/handlers/gemini.js",
       "anchor": "    } else if (textParts.length) {",
       "replacement": "    } else {"
+    },
+    {
+      "name": "the Responses converter stringifies a zero-length content array again — the two-character junk string \"[]\" reaches the upstream and the shared empty-user 400 is bypassed, which is the hole the 2026-10-07 review found (predicate B is supposed to be the single place this is decided)",
+      "file": "src/handlers/responses.js",
+      "anchor": "  if (content.length === 0) return '';",
+      "replacement": "  if (false) return '';"
     }
   ]
 }

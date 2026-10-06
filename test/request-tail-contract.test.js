@@ -33,6 +33,7 @@ import assert from 'node:assert/strict';
 import { handleChatCompletions } from '../src/handlers/chat.js';
 import { handleMessages } from '../src/handlers/messages.js';
 import { handleGemini } from '../src/handlers/gemini.js';
+import { handleResponses } from '../src/handlers/responses.js';
 
 const CTX = { callerKey: 'api:test:user:tail-contract' };
 
@@ -181,6 +182,24 @@ describe('the Anthropic surface: textless turns are dropped, so the guard never 
     assert.equal(res.status, 400);
     assert.equal(res.stream, undefined);
     assert.equal(res.body.error.type, 'invalid_request_error');
+  });
+});
+
+describe('the Responses surface reaches the same guard', () => {
+  it('an empty newest user turn given as an empty array is rejected with the shared 400', async () => {
+    // normalizeMessageContent used to stringify a zero-length content array into
+    // the two-character string "[]" (JSON.stringify([])), so this shape slipped
+    // past predicate B and went upstream carrying literal junk instead of
+    // receiving the same 400 the chat surface gives it. Pinned so the
+    // conversion cannot quietly regress to "[]" again.
+    const res = await handleResponses(
+      { model: 'claude-sonnet-4.6', input: [{ role: 'user', content: [{ type: 'input_text', text: 'hi' }] }, { role: 'user', content: [] }] },
+      CTX,
+    );
+    assert.equal(res.status, 400, 'the responses surface must reach the shared empty-user 400');
+    assert.equal(res.body.error.type, 'invalid_request_error');
+    assert.equal(res.body.error.param, 'messages');
+    assert.match(res.body.error.message, /last user message has empty content/);
   });
 });
 
