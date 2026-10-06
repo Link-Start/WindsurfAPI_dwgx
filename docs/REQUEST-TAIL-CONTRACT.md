@@ -7,7 +7,9 @@ machine-checkable half.
 **Audience:** whoever is about to "fix" a request-tail rejection, or the per-surface difference
 between how the surfaces handle one.
 **Measured:** 2026-10-07 against `master` @ `df9d429` (worktree `.claude/worktrees/tail-contract`).
-Every line number below is re-derivable with the commands in [§6](#6-where-this-is-pinned).
+The guard and converter line numbers below are re-derivable with the commands in
+[§6](#6-where-this-is-pinned); every other line number was hand-checked against the same tree on the
+same date.
 
 ## 1. The rule
 
@@ -36,7 +38,7 @@ One block: `src/handlers/chat.js:2994-3033` (assistant-tail check `:2994-3009`, 
 
 | stage | first reached at |
 |---|---|
-| connect-path stream handler (built around) | `chat.js:3648` |
+| connect-path stream branch (`if (stream)`) | `chat.js:3659` |
 | default-path stream branch (`if (stream)`) | `chat.js:4530` |
 | backend selection (`selectBackend`) | `chat.js:3226` |
 | account acquisition (`acquireConnectAccount` / `waitForAccount`) | `chat.js:3517` / `:4695` |
@@ -44,7 +46,7 @@ One block: `src/handlers/chat.js:2994-3033` (assistant-tail check `:2994-3009`, 
 
 Every surface delegates into this function: `/v1/chat/completions` (`src/server.js:610`),
 `/v1/completions` (`src/handlers/completions.js:97`), `/v1/responses`
-(`src/handlers/responses.js:1408`), `/v1/messages` (`src/handlers/messages.js:1645`), Gemini
+(`src/handlers/responses.js:1415`), `/v1/messages` (`src/handlers/messages.js:1645`), Gemini
 (`src/handlers/gemini.js:768`). No surface can bypass the checks, and a rejected request never
 touches a backend, an account, or the cache.
 
@@ -55,8 +57,10 @@ The guard is shared; the input is not. The Anthropic and Gemini converters norma
 in: the per-turn push chains in `anthropicToOpenAI` (`src/handlers/messages.js:729-741`) and
 `geminiToOpenAI` (`src/handlers/gemini.js:235-247`) have no final `else`. The textless variants of
 **both rejected shapes** are therefore **served** on `/v1/messages` and Gemini, while
-`/v1/chat/completions` and `/v1/responses` see the raw shape and get the 400s (the Responses
-converter passes such items through — measured 2026-10-07).
+`/v1/chat/completions` and `/v1/responses` reach the guard and get the 400s — the Responses
+converter keeps a zero-length content array empty, so predicate B fires there too. (It used to
+stringify `[]` into the two-character junk string `"[]"`, which slipped past the guard until the
+2026-10-07 review; fixed and pinned in `test/request-tail-contract.test.js`.)
 
 The boundary is by *yield*, not by emptiness, and it is exact: on the Anthropic surface a
 `content: ''` string is materialised as an empty-content message and still receives the same 400;
@@ -104,14 +108,18 @@ The current rule is a **measurement, not a preference**. What would have to exis
 | what | where |
 |---|---|
 | the pre-existing tail-assistant 400 on the chat surface | `test/responses-chain-scope.test.js:106-137` |
-| empty-user shapes (including the tool-tail case), the streaming refusals, the Anthropic/Gemini drop difference, and the with-text boundary | `test/request-tail-contract.test.js` |
+| empty-user shapes (including the tool-tail case), the streaming refusals, the predicate order, the Anthropic/Gemini drop difference, the with-text boundary, and the Responses surface's empty-array 400 | `test/request-tail-contract.test.js` |
 | mutants that must red that file | `test/mutations/request-tail-contract.json` |
 
 Provenance, 2026-10-07, `master` @ `df9d429`:
 
-- line numbers quoted above: `grep -n 'ANSWERABLE_ROLES\|trimmedBytes === 0' src/handlers/chat.js`
+- guard and converter line numbers: `grep -n 'ANSWERABLE_ROLES\|trimmedBytes === 0' src/handlers/chat.js`
   and `grep -n 'textParts.length' src/handlers/messages.js src/handlers/gemini.js`
+- §2 stage rows (first occurrences): `grep -n 'await acquireConnectAccount(\|selectBackend({ modelInfo })\|await waitForAccountFn(\|const cached = cacheShareable\|if (stream)' src/handlers/chat.js`
+- surface delegation lines: `grep -n '|| handleChatCompletions' src/handlers/completions.js src/handlers/responses.js src/handlers/messages.js src/handlers/gemini.js`
+  and `grep -n 'handleChatCompletions(body' src/server.js`
+- §4 completions numbers: `grep -n 'Streaming is not supported\|promptToText(body.prompt)\|messages: \[{ role' src/handlers/completions.js`
 - behaviour and counts: `node --import ./scripts/mutation-network-deny.mjs --import ./test/setup-env.mjs --test --test-force-exit test/request-tail-contract.test.js`
-  → 15 pass / 0 fail; `node scripts/spec-baseline-check.mjs request-tail-contract.json` →
-  `15 pass + 0 approved skips = 15 [MEASURED_NO_SKIPS]`
+  → 17 pass / 0 fail; `node scripts/spec-baseline-check.mjs request-tail-contract.json` →
+  `17 pass + 0 approved skips = 17 [MEASURED_NO_SKIPS]`
 - commits: `git log --oneline -1 8334cea` and `git log --oneline -1 79cd990`
