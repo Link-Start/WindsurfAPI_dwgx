@@ -119,8 +119,13 @@ quarantine 账号 120 秒（`src/handlers/chat.js:2971-2973`）；空的新 user
 
 本机（Windows / node v24.19.0）以规格自身的 anchor/replacement 字节手工套用：基线 23 pass / 0 fail；
 8 条突变全部判红（各条 1–10 个测试变红），每次都是 23 测试全跑——该规格在 HEAD 上可评分。全量
-`scripts/mutate-verify.mjs` 重评分记录在 71b2ae8（node v24.21.0：8/8 命中、exit 0）；本机 harness
-自身拒绝运行（需受信绝对路径的 POSIX git）。
+`scripts/mutate-verify.mjs` 重评分记录在 71b2ae8：**WSL，node v24.21.0，1500 MB cgroup 限制内存**
+（该规格的旧突变会让进程 OOM），8/8 命中、exit 0；本机 harness 自身拒绝运行（需受信绝对路径的 POSIX git）。
+
+**bench 复核（2026-10-07，`hmc`，`runs/master-final`）**：`origin/master` @ `74f6c6d` —— 与本版
+tag 目标**同源代码**（差别只有版本号与文档）—— `GATE_EXIT=0`，全量 **`sweep_ok=85 sweep_abort=0`**
+（85 份规格全部可评分，零拒收），其中该规格的日志写着
+`all 8 mutation(s) behaved as expected; tree clean`。
 
 `node scripts/spec-static-check.mjs` 本机：85 份规格 / 766 条突变，锚点唯一、格式良好。
 
@@ -139,8 +144,10 @@ tracked-files 计数；仓内修复（5fe110d）：`docs/README.md` 的发布数
   未 armed，整个套件按声明跳过。
 - `system:[null]` 的"修复后完整 200"在本机只能验到越过转换器（提交记录本机 529 因 LS 二进制
   缺失）；200 由仓库自身 backend seam 的测试钉住，真实账号路径未验。
-- s2-b 的 harness 全量重评分（8/8、exit 0）是 bench（node v24.21.0）记录；本机以手工字节复验
-  8/8（23 测试全跑），但 `scripts/mutate-verify.mjs` 在本机拒绝运行（POSIX git）。
+- s2-b 的 harness 全量重评分（8/8、exit 0）先是 **WSL** 记录（node v24.21.0，1500 MB cgroup 限内存），
+  现已由 **bench 复核**（`hmc`，`runs/master-final`，`74f6c6d`，`GATE_EXIT=0` 且
+  `sweep_ok=85 sweep_abort=0`，该规格日志 `all 8 mutation(s) behaved as expected; tree clean`）。
+  本机以手工字节复验 8/8（23 测试全跑），但 `scripts/mutate-verify.mjs` 在本机拒绝运行（POSIX git）。
 
 ## 验证记录
 
@@ -154,3 +161,6 @@ tracked-files 计数；仓内修复（5fe110d）：`docs/README.md` 的发布数
 - `node scripts/spec-baseline-check.mjs request-tail-contract.json` →
   `ok request-tail-contract.json: 17 pass + 0 approved skips = 17 [MEASURED_NO_SKIPS]`。
 - 手工突变复验（规格自身字节，本机）：s2-b 规格基线 23 pass、8/8 判红、每次 23 测试全跑。
+- **bench（`hmc`，`/root/testbench/windsurfapi-20261005`，`runs/master-final`，2026-10-07）**：
+  `origin/master` @ `74f6c6d`（与本版 tag 目标同源代码）—— 门 `GATE_EXIT=0`，
+  全量变异 sweep **`sweep_ok=85 sweep_abort=0 sweep_other=0`**（85 份规格全部可评分）。
