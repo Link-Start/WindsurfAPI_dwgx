@@ -640,10 +640,15 @@ function anthropicToOpenAI(body, ccActive = false, promptEstimate = null) {
   // upstream response itself carries none (resumed dialogs).
   let lastIncomingThinking = null;
   if (body.system) {
+    // `body.system` is a string or an array of text blocks — both are legal
+    // Anthropic shapes, and the typeof branch handles the string. In the array
+    // branch a malformed element contributes nothing instead of throwing:
+    // `system:[null]` used to 500 the whole request at `b.text` (the same
+    // class as the null content-block guard in the message loop below).
     const rawSys = typeof body.system === 'string'
       ? body.system
       : Array.isArray(body.system)
-        ? body.system.map(b => b.text || '').join('\n')
+        ? body.system.map(b => b?.text || '').join('\n')
         : '';
     // Strip the competitor self-ID that trips Devin's upstream fingerprint gate.
     // ccActive gates only the opt-in (cc) aggressive block; a1-a5 stay on for all.
@@ -661,6 +666,13 @@ function anthropicToOpenAI(body, ccActive = false, promptEstimate = null) {
       const toolResults = [];
       const msgThinking = [];
       for (const block of m.content) {
+        // Malformed block shapes are dropped, never fatal: a null/undefined
+        // entry (or a bare string) used to throw
+        // `TypeError: Cannot read properties of null (reading 'type')` here
+        // and 500 the whole request. Same skip convention as geminiToOpenAI
+        // (`if (part == null) continue`), responses' normalizeMessageContent
+        // (`if (!part) continue`) and the image extractors.
+        if (!block || typeof block !== 'object') continue;
         if (block.type === 'text') {
           textParts.push(block.text || '');
         } else if (block.type === 'image') {
