@@ -53,6 +53,13 @@ function normalizeMessageContent(content, { toolOutput = false } = {}) {
   if (typeof content === 'string') return content;
   if (!Array.isArray(content)) return stringifyMaybe(content);
 
+  // A zero-length content array means "no content", not the two-character
+  // string "[]". JSON.stringify([]) used to send that literal junk upstream
+  // and slip past the shared empty-user 400 (predicate B); the Responses
+  // surface must reach the same guard as the chat surface.
+  // See docs/REQUEST-TAIL-CONTRACT.md.
+  if (content.length === 0) return '';
+
   const hasContentBlock = content.some(part => part && typeof part === 'object' && typeof part.type === 'string');
   if (!hasContentBlock && toolOutput) {
     return stringifyMaybe(content);
