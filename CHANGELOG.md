@@ -2,7 +2,7 @@
 
 <p align="center">
   <a href="#最近的版本">最近的版本</a> ·
-  <a href="docs/releases/">全部 190 份发布说明</a> ·
+  <a href="docs/releases/">全部 191 份发布说明</a> ·
   <a href="README.md">← 主 README</a>
 </p>
 
@@ -19,9 +19,9 @@
 
 | | |
 |---|---|
-| 发布说明 | **190** 份,v2.0.6 → v3.9.39 |
+| 发布说明 | **191** 份,v2.0.6 → v3.9.40 |
 | git tag | 201 个（截至 2026-10-05） |
-| 当前 | **v3.9.39**(2026-10-05) |
+| 当前 | **v3.9.40**(2026-10-07) |
 | 运行时依赖 | **0** —— 从第一个版本保持到现在 |
 
 ```mermaid
@@ -41,6 +41,15 @@ flowchart LR
 ## 最近的版本
 
 下面是 3.9.x 全系。更早的版本请直接翻 [`docs/releases/`](docs/releases/)。
+
+### [v3.9.40](docs/releases/RELEASE_NOTES_3.9.40.md) · 2026-10-07
+
+畸形输入不再打成 500 或变成上游文本:带 per-user scope 的 `content:[null]`、`system:[null]` 和
+`/v1/responses` 的空 `content: []` 现在都按既有规则在本地裁决(共用 400 / 转换器放行)。仪表盘显示
+解码后的 ACU 成本(仅有值时、绝不显示假 0,子分位不压平);校准器不再把费用坐标 `#22` 当模型名;
+thinking 块始终携带 `signature`(PR #278)。工程侧:请求尾契约成文、CONTRIBUTING 补审查合并标准
+(RC0–RC12)、s2-b 突变规格收窄后可评分、八处烂数字改指来源。无新路由、无新增字段(`signature`
+为既有字段、现始终存在)、无默认开关变化;无 live-account 验收。
 
 ### [v3.9.39](docs/releases/RELEASE_NOTES_3.9.39.md) · 2026-10-05
 
